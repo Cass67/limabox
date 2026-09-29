@@ -168,6 +168,12 @@ limactl shell "$NAME" sh -c 'z=${LINUX_HOME:-$HOME}/.zdot; mkdir -p $z && for f 
     echo "[[ -r \$HOME/$f ]] && source \$HOME/$f"; echo "source /etc/zsh-mac-path"; } > $z/$f
 done'
 
+# Optional per-user setup runs in Fedora after shell wrappers are regenerated on each install.
+if [[ -f $HOME/.linux/limabox/init.sh ]]; then
+  step "Running per-user VM setup"
+  limactl shell "$NAME" bash "$HOME/.linux/limabox/init.sh"
+fi
+
 # One-time move of CLI data written before shells switched homes (e.g. opencode auth + sessions).
 limactl shell "$NAME" sh -c 'o=$LINUX_HOME/.local/share/opencode n=$HOME/.linux/share/opencode
   [ -n "$LINUX_HOME" ] && [ -d "$o" ] && [ ! -e "$n" ] && mkdir -p "${n%/*}" && mv "$o" "$n"; true'

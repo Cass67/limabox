@@ -44,6 +44,9 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   git config just work. Linux-only data (XDG data/state/cache, cargo, go, pip) goes to `~/.linux`.
   Mac-only `PATH` entries (Homebrew, `~/.cargo/bin`, `~/.local/bin`, …) are dropped after your
   dotfiles load, since those are macOS binaries.
+- Optional per-user setup: `~/.linux/limabox/init.sh` runs as the VM user on each install, after
+  zsh wrappers are regenerated. Keep machine-specific tools, aliases and proxy settings there
+  instead of in this repo.
 - GUI apps keep the Linux home (`$LINUX_HOME`) so their own settings live there.
 - **Open on the Mac**: `xdg-open`, `open`, `$BROWSER` and Fedora's default browser all hand off to
   macOS `open`. The Mac side only accepts http(s)/mailto URLs and existing files under your home,
