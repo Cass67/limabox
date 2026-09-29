@@ -141,6 +141,7 @@ if [ -d "/Users/$USER" ] && [ "$HOME" != "/Users/$USER" ]; then
   [ "$PWD" = "$_lh" ] && cd "$HOME"
   unset _lh
 fi
+export BROWSER=/usr/local/bin/xdg-open # opens on the Mac, see lx --agent
 EOF
 # /etc/zshenv runs for every zsh (before ~/.zshenv), so zsh picks it up before reading any dotfile.
 limactl shell "$NAME" sudo sh -c \
@@ -170,6 +171,23 @@ done'
 # One-time move of CLI data written before shells switched homes (e.g. opencode auth + sessions).
 limactl shell "$NAME" sh -c 'o=$LINUX_HOME/.local/share/opencode n=$HOME/.linux/share/opencode
   [ -n "$LINUX_HOME" ] && [ -d "$o" ] && [ ! -e "$n" ] && mkdir -p "${n%/*}" && mv "$o" "$n"; true'
+
+# Extra packages + setup script: declarative, re-applied on every run (distrobox --additional-packages
+# and --init-hooks). Both live on the Mac, so a rebuilt VM gets them back.
+cfgdir=$HOME/.config/limabox
+mkdir -p "$cfgdir"
+[[ -e $cfgdir/packages ]] || cat >"$cfgdir/packages" <<'EOF'
+# Extra Fedora packages, one per line (# comments ok). Installed on every ./install.sh run.
+EOF
+read -r -a pkgs <<<"$(sed 's/#.*//' "$cfgdir/packages" | xargs)"
+if ((${#pkgs[@]})); then
+  step "Installing packages from $cfgdir/packages: ${pkgs[*]}"
+  limactl shell "$NAME" sudo dnf install -y -q "${pkgs[@]}"
+fi
+if [[ -f $cfgdir/init.sh ]]; then
+  step "Running $cfgdir/init.sh in the VM as root"
+  limactl shell "$NAME" sudo bash "$cfgdir/init.sh"
+fi
 
 step "Setting Linux text scale to $TEXT_SCALE"
 limactl shell "$NAME" gsettings set org.gnome.desktop.interface text-scaling-factor "$TEXT_SCALE"
@@ -232,6 +250,39 @@ limactl shell "$NAME" sudo chmod 755 /usr/local/bin/lx-stamp
 echo "post_transaction::::/usr/local/bin/lx-stamp" |
   limactl shell "$NAME" sudo tee /etc/dnf/libdnf5-plugins/actions.d/fedora-lima.actions >/dev/null
 
+step "Routing xdg-open/open in the VM to macOS open"
+queue=$stampdir/open-$NAME
+mkdir -p "$queue"
+sed "s|@Q@|$queue|" <<'EOF' | limactl shell "$NAME" sudo tee /usr/local/bin/xdg-open >/dev/null
+#!/bin/sh
+# limabox: xdg-open/open hand URLs and files to macOS `open`. Each request is a file in a queue dir
+# (under the shared Mac home) that the Mac-side agent (lx --agent) validates and opens.
+q=@Q@
+[ $# -gt 0 ] || { echo "usage: ${0##*/} <url|file>..." >&2; exit 1; }
+for a; do
+  case $a in
+    *://* | mailto:*) t=$a ;;
+    *) t=$(realpath -e -- "$a" 2>/dev/null) || { echo "${0##*/}: $a: no such file" >&2; exit 1; } ;;
+  esac
+  case $t in
+    /Users/* | *://* | mailto:*) ;;
+    *) echo "${0##*/}: $t is inside the VM; macOS only sees files under /Users" >&2; exit 1 ;;
+  esac
+  printf '%s\n' "$t" >"$q/.tmp.$$" && mv "$q/.tmp.$$" "$q/req.$$.$(date +%s%N)"
+done
+EOF
+limactl shell "$NAME" sudo sh -c 'chmod 755 /usr/local/bin/xdg-open && ln -sfn xdg-open /usr/local/bin/open'
+# GUI apps that ask GIO for the default browser (instead of calling xdg-open) get it too.
+limactl shell "$NAME" sudo tee /usr/local/share/applications/limabox-mac-open.desktop >/dev/null <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Open on Mac
+Exec=/usr/local/bin/xdg-open %u
+NoDisplay=true
+MimeType=x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/mailto;
+EOF
+limactl shell "$NAME" sh -c 'BROWSER= HOME=${LINUX_HOME:-$HOME} XDG_CONFIG_HOME= xdg-settings set default-web-browser limabox-mac-open.desktop'
+
 step "Installing lx to $LX_DIR"
 mkdir -p "$LX_DIR"
 sed -e "s|@NAME@|$NAME|g" -e "s|@APPS@|$APPS_DIR|g" -e "s|@LX@|$LX_DIR/lx|g" \
@@ -239,7 +290,59 @@ sed -e "s|@NAME@|$NAME|g" -e "s|@APPS@|$APPS_DIR|g" -e "s|@LX@|$LX_DIR/lx|g" \
 #!/bin/zsh
 # lx <app> [args]: run a Linux GUI app from the Lima VM as native macOS windows (Cocoa-Way rootless).
 # lx --sync:       (re)build the Mac launchers in @APPS@ from the VM's installed GUI apps.
-[[ $# -gt 0 ]] || { echo "usage: lx <app> [args] | lx --sync" >&2; exit 1; }
+# lx --bin <cmd> [name]: add a Mac command that runs <cmd> in the VM; lx --unbin <name> removes it.
+# lx --agent:      run by the LaunchAgent: open queued xdg-open requests, re-sync after dnf.
+[[ $# -gt 0 ]] || { echo "usage: lx <app> [args] | --sync | --bin <cmd> [name] | --unbin <name>" >&2; exit 1; }
+
+if [[ $1 == --bin ]]; then
+  [[ -n $2 ]] || { echo "usage: lx --bin <cmd> [name]" >&2; exit 1; }
+  f=${0:A:h}/${3:-$2}
+  # The marker must be line 2: lx itself contains the marker text inside this template.
+  if [[ -e $f ]] && [[ $(sed -n 2p $f) != "# limabox-bin:"* ]]; then
+    echo "lx --bin: $f exists and is not a limabox wrapper" >&2; exit 1
+  fi
+  cat >$f <<BIN
+#!/bin/sh
+# limabox-bin: runs '$2' in the Fedora VM '@NAME@' (in the current directory)
+if [ "\$(uname -s)" = Linux ]; then # this dir can be on PATH inside the VM too: run the real one
+  me=\$(dirname "\$0") IFS=:
+  for d in \$PATH; do [ "\$d" != "\$me" ] && [ -x "\$d/$2" ] && exec "\$d/$2" "\$@"; done
+  echo "$2: not found" >&2; exit 127
+fi
+exec @BREW@/limactl shell @NAME@ ${(q)2} "\$@"
+BIN
+  chmod 755 $f; echo "added ${f/#$HOME/~}"; exit 0
+fi
+
+if [[ $1 == --unbin ]]; then
+  f=${0:A:h}/$2
+  [[ -f $f && $(sed -n 2p $f) == "# limabox-bin:"* ]] || { echo "lx --unbin: $f is not a limabox wrapper" >&2; exit 1; }
+  rm $f; echo "removed ${f/#$HOME/~}"; exit 0
+fi
+
+if [[ $1 == --agent ]]; then
+  q=$HOME/.cache/fedora-lima/open-@NAME@ stamp=$HOME/.cache/fedora-lima/@NAME@.stamp
+  # Events arriving mid-run are dropped by launchd, so loop until there is nothing left to do.
+  while :; do
+    busy=
+    for req in $q/req.*(N); do
+      busy=1; t=$(<$req); rm -f $req
+      case $t in
+        http://* | https://* | mailto:*) open $t ;;
+        # Only existing files under this home, and never app bundles or scripts macOS would run.
+        $HOME/*)
+          if [[ -e $t && $t != *.(app|command|tool|terminal|workflow|pkg|mpkg)(|/*) ]]; then open $t
+          else echo "refused: $t"; fi ;;
+        *) echo "refused: $t" ;;
+      esac
+    done
+    if [[ $(cat $stamp 2>/dev/null) != $(cat $stamp.synced 2>/dev/null) ]]; then
+      busy=1; cp $stamp $stamp.synced; @LX@ --sync
+    fi
+    [[ -n $busy ]] || break
+  done
+  exit 0
+fi
 
 if [[ $1 == --sync ]]; then
   apps=@APPS@ icons=$HOME/.cache/fedora-lima/icons-@NAME@
@@ -309,7 +412,7 @@ chmod 755 "$LX_DIR/lx"
 step "Creating Mac launchers in $APPS_DIR"
 "$LX_DIR/lx" --sync
 
-step "Installing login agent that re-syncs launchers after dnf installs/removes"
+step "Installing login agent (opens xdg-open requests, re-syncs launchers after dnf)"
 label=local.fedora-lima.sync.$NAME
 agent=$HOME/Library/LaunchAgents/$label.plist
 touch "$stampdir/$NAME.stamp"
@@ -319,9 +422,10 @@ cat >"$agent" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$label</string>
-  <key>ProgramArguments</key><array><string>$LX_DIR/lx</string><string>--sync</string></array>
+  <key>ProgramArguments</key><array><string>$LX_DIR/lx</string><string>--agent</string></array>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(brew --prefix)/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
-  <key>WatchPaths</key><array><string>$stampdir/$NAME.stamp</string></array>
+  <key>WatchPaths</key><array><string>$stampdir/$NAME.stamp</string><string>$queue</string></array>
+  <key>ThrottleInterval</key><integer>1</integer>
   <key>StandardOutPath</key><string>$stampdir/sync-$NAME.log</string>
   <key>StandardErrorPath</key><string>$stampdir/sync-$NAME.log</string>
 </dict></plist>
@@ -340,6 +444,9 @@ Done.
   GUI apps:   Launchpad/Finder: $APPS_DIR (drag to the Dock; kept in sync after dnf install/remove)
               or from a Mac terminal: lx tabby | lx gnome-terminal | lx brave-browser | lx foot
   Resync:     lx --sync   (e.g. after flatpak installs, which bypass dnf)
+  Open:       'open <url|file>' or xdg-open in Fedora opens it on the Mac
+  Commands:   lx --bin <cmd>  adds a Mac command that runs the Fedora one (lx --unbin <cmd>)
+  Extras:     $cfgdir/packages (+ optional init.sh) are applied on every run
   opencode:   config + MCPs shared with the Mac; logins are per-machine: in Fedora run
               'opencode auth login' per provider and 'opencode mcp auth <name>' per OAuth MCP
   Packages:   $([[ $NAME == default ]] && echo lima || echo "limactl shell $NAME") sudo dnf install -y <pkg>
