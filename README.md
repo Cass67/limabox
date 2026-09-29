@@ -1,0 +1,68 @@
+# limabox
+
+distrobox, but on a Mac: a Fedora VM (Lima) where your Mac home is your Linux home, plus Linux GUI
+apps as native macOS windows (Cocoa-Way rootless + waypipe) with Launchpad/Dock launchers that
+stay in sync with `dnf`.
+
+## Install
+
+Needs Homebrew on Apple Silicon. Takes ~5 min the first time; safe to re-run (keeps the VM).
+
+```bash
+./install.sh
+```
+
+| Variable | Default | |
+|---|---|---|
+| `NAME` | `default` | Lima instance name (`default` makes plain `lima` work) |
+| `LX_DIR` | `~/.local/bin` | where `lx` goes; must be on `PATH` |
+| `APPS_DIR` | `~/Applications/Linux` | Mac launchers (home Applications, not `/Applications`) |
+| `TEXT_SCALE` | `1.25` | Linux GUI text scale |
+
+If a Lima `default` VM already exists and is not Fedora, the installer stops: use
+`NAME=fedora ./install.sh` or `limactl delete -f default` first.
+
+## Use
+
+| | |
+|---|---|
+| Fedora shell (opens in the current Mac dir) | `lima` |
+| One command | `lima make`, `lima cargo build` |
+| GUI app | click it in `~/Applications/Linux` / Launchpad / Spotlight, or `lx tabby` |
+| Install / remove | `lima sudo dnf install -y <pkg>` — launchers appear/vanish on their own |
+| Rebuild launchers | `lx --sync` (e.g. after flatpak, which bypasses dnf) |
+| Stop / start / reset | `limactl stop default` / `limactl start default` / `limactl delete -f default && ./install.sh` |
+
+## What you get
+
+- Fedora on VZ + virtiofs, Rosetta for x86 binaries, dev toolchain, zsh, uv, opencode-v2, Brave,
+  Tabby (tabs on the left), gnome-terminal, foot.
+- **Seamless home**: shells get `HOME=/Users/<you>`, so all zsh dotfiles, aliases, `~/.ssh` and
+  git config just work. Linux-only data (XDG data/state/cache, cargo, go, pip) goes to `~/.linux`.
+  Mac-only `PATH` entries (Homebrew, `~/.cargo/bin`, `~/.local/bin`, …) are dropped after your
+  dotfiles load, since those are macOS binaries.
+- GUI apps keep the Linux home (`$LINUX_HOME`) so their own settings live there.
+
+## How it works
+
+- `install.sh` embeds the Lima template and writes everything else after boot, so re-running it
+  updates an existing VM.
+- `lx` (Mac): starts Cocoa-Way with `COCOA_WAY_PRESENTATION=rootless` and runs the app over
+  `waypipe ssh` using Lima's ssh config. `.app` launchers set `LX_WAIT=1` because macOS kills an
+  app's children when it exits.
+- `lx-apps` (VM) lists GUI `.desktop` entries + icons; `lx --sync` turns them into `.app` bundles.
+- A dnf5 `actions` hook writes `~/.cache/fedora-lima/<NAME>.stamp` after every transaction; a
+  LaunchAgent (`local.fedora-lima.sync.<NAME>`) watches it and runs `lx --sync`.
+- `/etc/profile.d/mac-home.sh` (sourced from `/etc/zshenv`) switches `HOME`; zsh reads the Mac
+  dotfiles through wrappers in `$LINUX_HOME/.zdot` that then apply `/etc/zsh-mac-path`.
+
+## Gotchas
+
+- Chromium/Electron apps need `--ozone-platform=wayland` (there is no Xwayland); known ones get a
+  wrapper in `/usr/local/bin`, unknown ones are detected by `lx-apps`. X11-only apps (Java/AWT)
+  can't be shown.
+- opencode v2 keeps logins in its database, per machine: in Fedora run `opencode auth login` and
+  `opencode mcp auth <name>`. MCPs that run `/Applications/...` binaries can't work in Linux;
+  ones that talk to Mac apps must use `host.lima.internal`, not `localhost`.
+- `ssh` in Fedora reads your Mac `~/.ssh/config`: add `IgnoreUnknown UseKeychain` if you use it.
+- Caps Lock can desync between Mac and Linux windows; press it twice.
