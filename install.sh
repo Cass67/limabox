@@ -48,6 +48,7 @@ vmOpts:
 ssh:
   forwardX11: true
   forwardX11Trusted: true
+  forwardAgent: true # Mac ssh-agent (Keychain keys) inside the VM; keys never leave the Mac
 
 provision:
   - mode: system
@@ -58,7 +59,7 @@ provision:
         https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
       dnf install -y \
         zsh git curl wget unzip which vim neovim htop tree xauth \
-        waypipe foot gnome-terminal dconf brave-browser ripgrep librsvg2-tools uv \
+        waypipe foot gnome-terminal dconf brave-browser ripgrep librsvg2-tools uv gh \
         @development-tools gcc-c++ cmake ninja-build clang llvm \
         python3-devel nodejs golang rust cargo java-25-openjdk-devel
       usermod -s /bin/zsh "{{.User}}"
@@ -109,6 +110,13 @@ if [[ $(limactl list --format '{{.Status}}' "$NAME") != Running ]]; then
   limactl start "$NAME"
 fi
 
+if ! grep -q 'forwardAgent: true' ~/.lima/"$NAME"/lima.yaml; then
+  step "Enabling SSH agent forwarding for VM '$NAME' (one-time restart)"
+  limactl stop "$NAME"
+  limactl edit --tty=false --set '.ssh.forwardAgent = true' "$NAME"
+  limactl start "$NAME"
+fi
+
 if ! limactl shell "$NAME" grep -qx 'ID=fedora' /etc/os-release; then
   echo "error: existing VM '$NAME' is not Fedora (e.g. Lima's default Ubuntu)." >&2
   echo "  keep it:    NAME=fedora $0" >&2
@@ -142,6 +150,23 @@ if [ -d "/Users/$USER" ] && [ "$HOME" != "/Users/$USER" ]; then
   unset _lh
 fi
 export BROWSER=/usr/local/bin/xdg-open # opens on the Mac, see lx --agent
+
+# The forwarded Mac ssh-agent socket changes per ssh session; keep a stable link so shells started
+# later (GUI terminals, which aren't ssh sessions) find it too.
+_as=${LINUX_HOME:-$HOME}/.ssh-agent.sock
+if [ -S "$SSH_AUTH_SOCK" ] && [ "$SSH_AUTH_SOCK" != "$_as" ]; then ln -sfn "$SSH_AUTH_SOCK" "$_as"; fi
+[ -S "$_as" ] && export SSH_AUTH_SOCK=$_as
+unset _as
+
+# git over HTTPS: the Mac ~/.gitconfig often names credential.helper osxkeychain, which Linux lacks.
+# Override it for Linux shells only (env config wins over files): gh for github.com, a memory cache
+# elsewhere. gh keeps its own login under ~/.linux, apart from the Mac's gh.
+export GH_CONFIG_DIR=/Users/$USER/.linux/config/gh
+export GIT_CONFIG_COUNT=4 \
+  GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0= \
+  GIT_CONFIG_KEY_1=credential.helper GIT_CONFIG_VALUE_1='cache --timeout=28800' \
+  GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2= \
+  GIT_CONFIG_KEY_3=credential.https://github.com.helper GIT_CONFIG_VALUE_3='!/usr/bin/gh auth git-credential'
 EOF
 # /etc/zshenv runs for every zsh (before ~/.zshenv), so zsh picks it up before reading any dotfile.
 limactl shell "$NAME" sudo sh -c \
@@ -201,7 +226,7 @@ limactl shell "$NAME" gsettings set org.gnome.desktop.interface text-scaling-fac
 step "Installing lx-apps (GUI app scanner) and dnf hook in the VM"
 stampdir=$HOME/.cache/fedora-lima # under ~ so the VM can write it
 mkdir -p "$stampdir"
-limactl shell "$NAME" sudo dnf install -y -q librsvg2-tools libdnf5-plugin-actions uv >/dev/null
+limactl shell "$NAME" sudo dnf install -y -q librsvg2-tools libdnf5-plugin-actions uv gh >/dev/null
 limactl shell "$NAME" sudo tee /usr/local/bin/lx-apps >/dev/null <<'EOF'
 #!/bin/bash
 # lx-apps OUTDIR: print GUI apps as id<TAB>name<TAB>command; write each icon to OUTDIR/<id>.png.
@@ -453,6 +478,8 @@ Done.
   Open:       'open <url|file>' or xdg-open in Fedora opens it on the Mac
   Commands:   lx --bin <cmd>  adds a Mac command that runs the Fedora one (lx --unbin <cmd>)
   Extras:     $cfgdir/packages (+ optional init.sh) are applied on every run
+  git/ssh:    your Mac ssh-agent is forwarded into Fedora; for HTTPS to GitHub run 'gh auth login'
+              once inside Fedora (other HTTPS hosts prompt once, then are cached for 8h)
   opencode:   config + MCPs shared with the Mac; logins are per-machine: in Fedora run
               'opencode auth login' per provider and 'opencode mcp auth <name>' per OAuth MCP
   Packages:   $([[ $NAME == default ]] && echo lima || echo "limactl shell $NAME") sudo dnf install -y <pkg>

@@ -48,6 +48,11 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   zsh wrappers are regenerated. Keep machine-specific tools, aliases and proxy settings there
   instead of in this repo.
 - GUI apps keep the Linux home (`$LINUX_HOME`) so their own settings live there.
+- **git / ssh**: your Mac ssh-agent (Keychain keys included) is forwarded into Fedora, and shells keep
+  a stable `~/.ssh-agent.sock` link so GUI terminals get it too. For HTTPS, Linux shells override
+  git's credential helper through `GIT_CONFIG_*` env vars (the shared `~/.gitconfig` is untouched):
+  `gh` for github.com (run `gh auth login` once in Fedora; its config lives in `~/.linux/config/gh`)
+  and an 8h memory cache for other hosts.
 - **Open on the Mac**: `xdg-open`, `open`, `$BROWSER` and Fedora's default browser all hand off to
   macOS `open`. The Mac side only accepts http(s)/mailto URLs and existing files under your home,
   and refuses app bundles and scripts (`.app`, `.command`, `.pkg`, …).
