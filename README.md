@@ -39,7 +39,7 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 ## What you get
 
 - Fedora on VZ + virtiofs, Rosetta for x86 binaries, dev toolchain, zsh, uv, opencode-v2, Brave,
-  Tabby (tabs on the left), gnome-terminal, foot.
+  Tabby (tabs on the left), gnome-terminal, foot, Files (nautilus).
 - **Seamless home**: shells get `HOME=/Users/<you>`, so all zsh dotfiles, aliases, `~/.ssh` and
   git config just work. Linux-only data (XDG data/state/cache, cargo, go, pip) goes to `~/.linux`.
   Mac-only `PATH` entries (Homebrew, `~/.cargo/bin`, `~/.local/bin`, …) are dropped after your
@@ -47,7 +47,9 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 - Optional per-user setup: `~/.linux/limabox/init.sh` runs as the VM user on each install, after
   zsh wrappers are regenerated. Keep machine-specific tools, aliases and proxy settings there
   instead of in this repo.
-- GUI apps keep the Linux home (`$LINUX_HOME`) so their own settings live there.
+- GUI apps keep the Linux home (`$LINUX_HOME`) so their own settings live there. That's why
+  Files opens on a near-empty home: your Mac home is the **Mac** bookmark in its sidebar (or
+  Ctrl+L, `/Users/<you>`).
 - **git / ssh**: your Mac ssh-agent (Keychain keys included) is forwarded into Fedora, and shells keep
   a stable `~/.ssh-agent.sock` link so GUI terminals get it too. For HTTPS, Linux shells override
   git's credential helper through `GIT_CONFIG_*` env vars (the shared `~/.gitconfig` is untouched):
@@ -71,12 +73,12 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   `local.fedora-lima.display.<NAME>`, which reconnects after VM restarts. `WAYLAND_DISPLAY` is set
   for systemd and all shells, so any Linux process can open windows: helpers such as
   gnome-terminal's Preferences, and apps started from a Linux shell.
-- `lx <app>` (Mac): makes sure Cocoa-Way runs, then starts the app with `systemd-run --user` in the
-  current directory, so it gets the persistent display and the Linux home and outlives the call.
 - Cocoa-Way runs under launchd (`local.fedora-lima.cocoa-way`, KeepAlive): started at login and
   restarted within seconds if it quits, is killed or crashes, so Linux apps started from inside
   the VM always have a compositor (windows open at that moment close with it). Stop it for real
   with `launchctl bootout gui/$(id -u)/local.fedora-lima.cocoa-way`.
+- `lx <app>` (Mac): makes sure Cocoa-Way runs, then starts the app with `systemd-run --user` in the
+  current directory, so it gets the persistent display and the Linux home and outlives the call.
 - `lx-apps` (VM) lists GUI `.desktop` entries + icons; `lx --sync` turns them into `.app` bundles.
 - A dnf5 `actions` hook writes `~/.cache/fedora-lima/<NAME>.stamp` after every transaction; a
   LaunchAgent (`local.fedora-lima.sync.<NAME>`) watches it plus the open queue
@@ -94,4 +96,8 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   `opencode mcp auth <name>`. MCPs that run `/Applications/...` binaries can't work in Linux;
   ones that talk to Mac apps must use `host.lima.internal`, not `localhost`.
 - `ssh` in Fedora reads your Mac `~/.ssh/config`: add `IgnoreUnknown UseKeychain` if you use it.
+- `~/Documents` (also Desktop/Downloads if macOS asks) is empty in Fedora until the app that
+  starts Lima (your terminal, or `limactl`) gets Full Disk Access in System Settings → Privacy &
+  Security; restart the VM after. A symlink *into* Documents doesn't help; move the folder out
+  and symlink `~/Documents/<dir>` → `~/<dir>` instead.
 - Caps Lock can desync between Mac and Linux windows; press it twice.

@@ -59,7 +59,7 @@ provision:
         https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
       dnf install -y \
         zsh git curl wget unzip which vim neovim htop tree xauth \
-        waypipe foot gnome-terminal dconf brave-browser ripgrep librsvg2-tools uv gh \
+        waypipe foot gnome-terminal nautilus dconf brave-browser ripgrep librsvg2-tools uv gh \
         @development-tools gcc-c++ cmake ninja-build clang llvm \
         python3-devel nodejs golang rust cargo java-25-openjdk-devel
       usermod -s /bin/zsh "{{.User}}"
@@ -224,10 +224,14 @@ fi
 step "Setting Linux text scale to $TEXT_SCALE"
 limactl shell "$NAME" gsettings set org.gnome.desktop.interface text-scaling-factor "$TEXT_SCALE"
 
+step "Bookmarking the Mac home in Files (GUI apps start in the Linux home)"
+limactl shell "$NAME" sh -c 'b=${LINUX_HOME:-$HOME}/.config/gtk-3.0/bookmarks; mkdir -p ${b%/*}
+  grep -qs "^file://$HOME " $b || echo "file://$HOME Mac" >>$b'
+
 step "Installing lx-apps (GUI app scanner) and dnf hook in the VM"
 stampdir=$HOME/.cache/fedora-lima # under ~ so the VM can write it
 mkdir -p "$stampdir"
-limactl shell "$NAME" sudo dnf install -y -q librsvg2-tools libdnf5-plugin-actions uv gh >/dev/null
+limactl shell "$NAME" sudo dnf install -y -q librsvg2-tools libdnf5-plugin-actions uv gh nautilus >/dev/null
 limactl shell "$NAME" sudo tee /usr/local/bin/lx-apps >/dev/null <<'EOF'
 #!/bin/bash
 # lx-apps OUTDIR: print GUI apps as id<TAB>name<TAB>command; write each icon to OUTDIR/<id>.png.
@@ -499,10 +503,6 @@ PLIST
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist"
 }
 mkdir -p ~/Library/LaunchAgents
-agent_plist "local.fedora-lima.display.$NAME" --display \
-  '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
-
-step "Creating Mac launchers in $APPS_DIR"
 # Cocoa-Way itself runs under launchd: started at login and restarted if it quits or crashes, so a
 # Linux app started from inside the VM always has a compositor. Only one instance may own the
 # display socket, so any copy started outside launchd is stopped first.
@@ -529,6 +529,10 @@ if ! launchctl print "gui/$(id -u)/$cocoa_label" >/dev/null 2>&1; then
   pkill -x cocoa-way || true
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$cocoa_label.plist"
 fi
+agent_plist "local.fedora-lima.display.$NAME" --display \
+  '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
+
+step "Creating Mac launchers in $APPS_DIR"
 "$LX_DIR/lx" --sync
 
 step "Installing login agent (opens xdg-open requests, re-syncs launchers after dnf)"
@@ -545,14 +549,14 @@ Done.
   Shell:      $([[ $NAME == default ]] && echo lima || echo "limactl shell $NAME")   (opens in your current Mac directory)
   Home:       shells use your Mac home and dotfiles; Linux-only data goes to ~/.linux
   GUI apps:   Launchpad/Finder: $APPS_DIR (drag to the Dock; kept in sync after dnf install/remove)
-              or from a Mac terminal: lx tabby | lx gnome-terminal | lx brave-browser | lx foot
+              or from a Mac terminal: lx tabby | lx gnome-terminal | lx nautilus | lx brave-browser | lx foot
   Resync:     lx --sync   (e.g. after flatpak installs, which bypass dnf)
+  Cocoa-Way:  kept running by launchd (quitting it restarts it); to turn it off:
+              launchctl bootout gui/\$(id -u)/local.fedora-lima.cocoa-way
   Open:       'open <url|file>' or xdg-open in Fedora opens it on the Mac
   Commands:   lx --bin <cmd>  adds a Mac command that runs the Fedora one (lx --unbin <cmd>)
   Extras:     $cfgdir/packages (+ optional init.sh) are applied on every run
   git/ssh:    your Mac ssh-agent is forwarded into Fedora; for HTTPS to GitHub run 'gh auth login'
-  Cocoa-Way:  kept running by launchd (quitting it restarts it); to turn it off:
-              launchctl bootout gui/\$(id -u)/local.fedora-lima.cocoa-way
               once inside Fedora (other HTTPS hosts prompt once, then are cached for 8h)
   opencode:   config + MCPs shared with the Mac; logins are per-machine: in Fedora run
               'opencode auth login' per provider and 'opencode mcp auth <name>' per OAuth MCP
