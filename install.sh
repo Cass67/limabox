@@ -150,6 +150,7 @@ if [ -d "/Users/$USER" ] && [ "$HOME" != "/Users/$USER" ]; then
   unset _lh
 fi
 export BROWSER=/usr/local/bin/xdg-open # opens on the Mac, see lx --agent
+export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-limabox} # persistent display, see lx --display
 
 # The forwarded Mac ssh-agent socket changes per ssh session; keep a stable link so shells started
 # later (GUI terminals, which aren't ssh sessions) find it too.
@@ -323,6 +324,7 @@ sed -e "s|@NAME@|$NAME|g" -e "s|@APPS@|$APPS_DIR|g" -e "s|@LX@|$LX_DIR/lx|g" \
 # lx --sync:       (re)build the Mac launchers in @APPS@ from the VM's installed GUI apps.
 # lx --bin <cmd> [name]: add a Mac command that runs <cmd> in the VM; lx --unbin <name> removes it.
 # lx --agent:      run by the LaunchAgent: open queued xdg-open requests, re-sync after dnf.
+# lx --display:    run by a LaunchAgent: keep the VM's Wayland display connected to Cocoa-Way.
 [[ $# -gt 0 ]] || { echo "usage: lx <app> [args] | --sync | --bin <cmd> [name] | --unbin <name>" >&2; exit 1; }
 
 if [[ $1 == --bin ]]; then
@@ -388,7 +390,7 @@ if [[ $1 == --sync ]]; then
       IFS=$'\t' read -r id name cmd <<<$line
       app="$apps/${name//\//-} (Linux).app"; keep[$app]=1
       launch="#!/bin/zsh
-export PATH=@BREW@:\$PATH LX_WAIT=1
+export PATH=@BREW@:\$PATH
 cd ~
 exec @LX@ sh -c ${(qq)cmd}"
       [[ -f $app/Contents/MacOS/launch && $(<$app/Contents/MacOS/launch) == $launch ]] && continue
@@ -421,48 +423,92 @@ PLIST
   exit 0
 fi
 
-export XDG_RUNTIME_DIR="${TMPDIR%/}/cocoa-way" WAYLAND_DISPLAY=wayland-1
-if [[ ! -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]]; then
+cw=$(getconf DARWIN_USER_TEMP_DIR)cocoa-way
+cocoa() { # Cocoa-Way must be up before a Linux app connects
+  [[ -S $cw/wayland-1 ]] && return
   COCOA_WAY_PRESENTATION=rootless cocoa-way >/dev/null 2>&1 &!
-  for _ in {1..20}; do [[ -S $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY ]] && break; sleep 0.25; done
+  for _ in {1..40}; do [[ -S $cw/wayland-1 ]] && break; sleep 0.25; done
+}
+
+# Run by a LaunchAgent: one persistent display for the whole VM. waypipe client (Mac, talks to
+# Cocoa-Way) <- ssh -R unix socket <- `waypipe server` in the VM (limabox-waypipe.service), which
+# owns $XDG_RUNTIME_DIR/wayland-limabox. Per-launch `waypipe ssh` can't do this: its display
+# socket disappears when the launched command exits, so helpers such as gnome-terminal's
+# Preferences (a separate process) had nowhere to connect.
+if [[ $1 == --display ]]; then
+  sock=$HOME/.cache/fedora-lima/waypipe-@NAME@.sock
+  cocoa
+  rm -f $sock
+  XDG_RUNTIME_DIR=$cw WAYLAND_DISPLAY=wayland-1 waypipe --socket $sock client &
+  trap "kill $! 2>/dev/null" EXIT
+  while :; do # reconnect whenever the VM restarts
+    ssh -F ~/.lima/@NAME@/ssh.config -o ControlMaster=no -o ControlPath=none \
+      -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -o ConnectTimeout=5 \
+      -N -R /tmp/limabox-waypipe.sock:$sock lima-@NAME@
+    sleep 5
+  done
 fi
 
-# gnome-terminal and other D-Bus-activated apps start via systemd --user, which needs the display.
-# GUI apps keep the Linux home (their settings live there); shells they spawn switch to the Mac one.
-remote="[ -n \"\$LINUX_HOME\" ] && export HOME=\$LINUX_HOME && unset LINUX_HOME ZDOTDIR XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME; cd ${(q)PWD} 2>/dev/null; systemctl --user import-environment WAYLAND_DISPLAY; export ELECTRON_OZONE_PLATFORM_HINT=wayland; exec ${(j: :)${(q)@}}"
-run() {
-  waypipe ssh -F ~/.lima/@NAME@/ssh.config lima-@NAME@ "sh -c ${(qq)remote}" 2>&1 \
-    | grep -v -e '^warn' -e 'No child processes' -e 'degenerate damage'
-}
-# .app launchers set LX_WAIT: macOS kills an app's children when it exits, which would drop waypipe.
-if [[ -n $LX_WAIT ]]; then run; else run &!; fi
+# GUI apps start under the VM's systemd --user manager: they get the persistent display and the
+# Linux home (their settings live there), in the current directory, and outlive this command.
+cocoa
+exec limactl shell @NAME@ systemd-run --user --collect --quiet --same-dir -- "$@"
 EOF
 chmod 755 "$LX_DIR/lx"
 [[ ":$PATH:" == *":$LX_DIR:"* ]] || echo "note: add $LX_DIR to PATH in ~/.zshrc"
+
+step "Setting up the persistent Linux display (wayland-limabox)"
+# sshd must replace the tunnel's socket when the Mac reconnects after a VM restart.
+echo "StreamLocalBindUnlink yes" |
+  limactl shell "$NAME" sudo tee /etc/ssh/sshd_config.d/60-limabox.conf >/dev/null
+limactl shell "$NAME" sudo systemctl reload sshd
+limactl shell "$NAME" sh -c 'd=${LINUX_HOME:-$HOME}/.config; mkdir -p $d/systemd/user $d/environment.d
+  printf "WAYLAND_DISPLAY=wayland-limabox\nELECTRON_OZONE_PLATFORM_HINT=wayland\n" > $d/environment.d/limabox.conf
+  cat > $d/systemd/user/limabox-waypipe.service <<UNIT
+[Unit]
+Description=limabox: persistent Wayland display forwarded to Cocoa-Way on the Mac
+
+[Service]
+# A crash or unclean stop leaves the socket behind and waypipe refuses to bind over it.
+ExecStartPre=/usr/bin/rm -f %t/wayland-limabox
+ExecStart=/usr/bin/waypipe --socket /tmp/limabox-waypipe.sock --display wayland-limabox server -- sleep infinity
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload
+  systemctl --user set-environment WAYLAND_DISPLAY=wayland-limabox ELECTRON_OZONE_PLATFORM_HINT=wayland
+  systemctl --user enable --now limabox-waypipe.service >/dev/null 2>&1
+  pkill -f '\''[g]nome-terminal-server'\''; true' # restarts on next use with the new display
+agent_plist() {                                   # label, lx mode, extra plist keys
+  cat >"$HOME/Library/LaunchAgents/$1.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$1</string>
+  <key>ProgramArguments</key><array><string>$LX_DIR/lx</string><string>$2</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(brew --prefix)/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  $3
+  <key>StandardOutPath</key><string>$stampdir/${2#--}-$NAME.log</string>
+  <key>StandardErrorPath</key><string>$stampdir/${2#--}-$NAME.log</string>
+</dict></plist>
+PLIST
+  launchctl bootout "gui/$(id -u)/$1" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist"
+}
+mkdir -p ~/Library/LaunchAgents
+agent_plist "local.fedora-lima.display.$NAME" --display \
+  '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
 
 step "Creating Mac launchers in $APPS_DIR"
 "$LX_DIR/lx" --sync
 
 step "Installing login agent (opens xdg-open requests, re-syncs launchers after dnf)"
-label=local.fedora-lima.sync.$NAME
-agent=$HOME/Library/LaunchAgents/$label.plist
 touch "$stampdir/$NAME.stamp"
-mkdir -p "${agent%/*}"
-cat >"$agent" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>$label</string>
-  <key>ProgramArguments</key><array><string>$LX_DIR/lx</string><string>--agent</string></array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(brew --prefix)/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
-  <key>WatchPaths</key><array><string>$stampdir/$NAME.stamp</string><string>$queue</string></array>
-  <key>ThrottleInterval</key><integer>1</integer>
-  <key>StandardOutPath</key><string>$stampdir/sync-$NAME.log</string>
-  <key>StandardErrorPath</key><string>$stampdir/sync-$NAME.log</string>
-</dict></plist>
-EOF
-launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$agent"
+agent_plist "local.fedora-lima.sync.$NAME" --agent "<key>WatchPaths</key><array><string>$stampdir/$NAME.stamp</string><string>$queue</string></array>
+  <key>ThrottleInterval</key><integer>1</integer>"
 
 step "Checking"
 limactl shell "$NAME" sh -c 'echo "  home: $HOME  shell: $(getent passwd $USER | cut -d: -f7)"; for c in zsh gcc waypipe brave-browser tabby opencode; do printf "  %-14s %s\n" $c "$(command -v $c || echo MISSING)"; done'

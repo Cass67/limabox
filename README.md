@@ -65,9 +65,14 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 
 - `install.sh` embeds the Lima template and writes everything else after boot, so re-running it
   updates an existing VM.
-- `lx` (Mac): starts Cocoa-Way with `COCOA_WAY_PRESENTATION=rootless` and runs the app over
-  `waypipe ssh` using Lima's ssh config. `.app` launchers set `LX_WAIT=1` because macOS kills an
-  app's children when it exits.
+- One persistent Wayland display for the whole VM, `wayland-limabox`: `waypipe server`
+  (`limabox-waypipe.service`, systemd --user) ↔ `ssh -R` unix-socket tunnel ↔ `waypipe client` →
+  Cocoa-Way (rootless). The Mac side is `lx --display`, kept alive by the LaunchAgent
+  `local.fedora-lima.display.<NAME>`, which reconnects after VM restarts. `WAYLAND_DISPLAY` is set
+  for systemd and all shells, so any Linux process can open windows: helpers such as
+  gnome-terminal's Preferences, and apps started from a Linux shell.
+- `lx <app>` (Mac): makes sure Cocoa-Way runs, then starts the app with `systemd-run --user` in the
+  current directory, so it gets the persistent display and the Linux home and outlives the call.
 - `lx-apps` (VM) lists GUI `.desktop` entries + icons; `lx --sync` turns them into `.app` bundles.
 - A dnf5 `actions` hook writes `~/.cache/fedora-lima/<NAME>.stamp` after every transaction; a
   LaunchAgent (`local.fedora-lima.sync.<NAME>`) watches it plus the open queue
