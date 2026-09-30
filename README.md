@@ -79,6 +79,11 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   `local.fedora-lima.display.<NAME>`, which reconnects after VM restarts. `WAYLAND_DISPLAY` is set
   for systemd and all shells, so any Linux process can open windows: helpers such as
   gnome-terminal's Preferences, and apps started from a Linux shell.
+- Cocoa-Way is built by `install.sh` from a pinned upstream commit plus
+  `patches/cocoa-way-cursor-hide-balance.patch` (into `~/.local/share/limabox/cocoa-way`; needs
+  `cargo`, installed via Homebrew if missing). 2.0.3 never balances `NSCursor` hide/unhide, so
+  after a Linux app hides the pointer (YouTube does during playback) the Mac cursor stays hidden
+  until a click. Drop the patch once upstream releases a fix.
 - Cocoa-Way runs under launchd (`local.fedora-lima.cocoa-way`, KeepAlive): started at login and
   restarted within seconds if it quits, is killed or crashes, so Linux apps started from inside
   the VM always have a compositor (windows open at that moment close with it). Stop it for real

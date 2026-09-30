@@ -1,0 +1,30 @@
+diff --git a/src/state.rs b/src/state.rs
+index b2f1ee8..906c177 100644
+--- a/src/state.rs
++++ b/src/state.rs
+@@ -1165,9 +1165,24 @@ impl SeatHandler for AppState {
+     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+         use objc2_app_kit::NSCursor;
+         use smithay::input::pointer::CursorIcon;
++        use std::sync::atomic::{AtomicBool, Ordering};
++        // NSCursor hide/unhide calls are counted and must be balanced. Clients such as Chromium
++        // hide the cursor repeatedly (YouTube does on every idle period during playback), so
++        // hide only once and unhide as soon as a visible cursor is set again.
++        static HIDDEN: AtomicBool = AtomicBool::new(false);
++        let hidden = matches!(image, CursorImageStatus::Hidden);
++        if HIDDEN.swap(hidden, Ordering::Relaxed) != hidden {
++            unsafe {
++                if hidden {
++                    NSCursor::hide()
++                } else {
++                    NSCursor::unhide()
++                }
++            }
++        }
+         unsafe {
+             match image {
+-                CursorImageStatus::Hidden => NSCursor::hide(),
++                CursorImageStatus::Hidden => {}
+                 CursorImageStatus::Named(icon) => {
+                     let cursor = match icon {
+                         CursorIcon::Text | CursorIcon::VerticalText => NSCursor::IBeamCursor(),

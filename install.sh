@@ -570,6 +570,25 @@ PLIST
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist"
 }
 mkdir -p ~/Library/LaunchAgents
+# Cocoa-Way 2.0.3 never balances NSCursor hide/unhide, so once a client hides the cursor (YouTube
+# does on every idle period) the Mac cursor stays hidden until a click. Build the pinned upstream
+# commit with patches/cocoa-way-cursor-hide-balance.patch until the fix is released.
+cw_rev=e1ff9b9b333a826ba507fb8d8010f4c6ce2d4b93
+cw_patch=$(cd "$(dirname "$0")" && pwd)/patches/cocoa-way-cursor-hide-balance.patch
+cw_bin=$HOME/.local/share/limabox/cocoa-way
+cw_stamp="$cw_rev $(shasum -a 256 "$cw_patch" | cut -c1-16)"
+if [[ ! -x $cw_bin || $(cat "$cw_bin.rev" 2>/dev/null) != "$cw_stamp" ]]; then
+  step "Building Cocoa-Way with the cursor fix (a few minutes, once)"
+  command -v cargo >/dev/null || brew install rust
+  git clone -q --filter=blob:none https://github.com/J-x-Z/cocoa-way.git "$tmp/cocoa-way"
+  git -C "$tmp/cocoa-way" checkout -q "$cw_rev"
+  git -C "$tmp/cocoa-way" apply "$cw_patch"
+  (cd "$tmp/cocoa-way" && cargo build --release --locked --quiet --bin cocoa-way)
+  mkdir -p "${cw_bin%/*}"
+  cp "$tmp/cocoa-way/target/release/cocoa-way" "$cw_bin"
+  echo "$cw_stamp" >"$cw_bin.rev"
+  launchctl kill TERM "gui/$(id -u)/local.fedora-lima.cocoa-way" 2>/dev/null || true # KeepAlive restarts it
+fi
 # Cocoa-Way itself runs under launchd: started at login and restarted if it quits or crashes, so a
 # Linux app started from inside the VM always has a compositor. Only one instance may own the
 # display socket, so any copy started outside launchd is stopped first.
@@ -579,7 +598,7 @@ cat >"$HOME/Library/LaunchAgents/$cocoa_label.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$cocoa_label</string>
-  <key>ProgramArguments</key><array><string>$(brew --prefix)/bin/cocoa-way</string></array>
+  <key>ProgramArguments</key><array><string>$cw_bin</string></array>
   <key>EnvironmentVariables</key><dict>
     <key>COCOA_WAY_PRESENTATION</key><string>rootless</string>
     <key>TMPDIR</key><string>$(getconf DARWIN_USER_TEMP_DIR)</string>
@@ -592,7 +611,9 @@ cat >"$HOME/Library/LaunchAgents/$cocoa_label.plist" <<PLIST
   <key>StandardErrorPath</key><string>$stampdir/cocoa-way.log</string>
 </dict></plist>
 PLIST
-if ! launchctl print "gui/$(id -u)/$cocoa_label" >/dev/null 2>&1; then
+# (Re)load when not loaded or pointing at another binary; any copy outside launchd is stopped first.
+if ! launchctl print "gui/$(id -u)/$cocoa_label" 2>/dev/null | grep -qF "$cw_bin"; then
+  launchctl bootout "gui/$(id -u)/$cocoa_label" 2>/dev/null || true
   pkill -x cocoa-way || true
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$cocoa_label.plist"
 fi
