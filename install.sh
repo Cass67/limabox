@@ -532,6 +532,31 @@ fi
 agent_plist "local.fedora-lima.display.$NAME" --display \
   '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
 
+step "Making ssh/git in Fedora use your Mac ssh setup and keys"
+# ssh reads the passwd home ($LINUX_HOME), not $HOME: point it at the Mac config and known_hosts.
+limactl shell "$NAME" sh -c 'c=${LINUX_HOME:-$HOME}/.ssh/config; mkdir -p -m 700 ${c%/*}; touch $c
+  grep -q "^# limabox:" $c || { printf "%s\n" "# limabox: use the Mac ~/.ssh (ssh reads the Linux home, not \$HOME)" \
+    "IgnoreUnknown UseKeychain" "UserKnownHostsFile $HOME/.ssh/known_hosts ~/.ssh/known_hosts" \
+    "Include $HOME/.ssh/config" "" | cat - $c >$c.new && mv $c.new $c; }; chmod 600 $c'
+# The macOS agent (forwarded into the VM) starts empty; load the Keychain-stored keys at login.
+keys_label=local.fedora-lima.ssh-keys
+cat >"$HOME/Library/LaunchAgents/$keys_label.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$keys_label</string>
+  <key>ProgramArguments</key><array><string>/usr/bin/ssh-add</string><string>--apple-load-keychain</string></array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+PLIST
+launchctl bootout "gui/$(id -u)/$keys_label" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$keys_label.plist"
+/usr/bin/ssh-add --apple-load-keychain 2>/dev/null || true
+if ! /usr/bin/ssh-add -l >/dev/null 2>&1 && [[ -t 0 ]]; then
+  echo "  ssh-agent is empty: adding your default keys to it and the Keychain (passphrase asked once)"
+  /usr/bin/ssh-add --apple-use-keychain || true
+fi
+
 step "Creating Mac launchers in $APPS_DIR"
 "$LX_DIR/lx" --sync
 
@@ -556,7 +581,8 @@ Done.
   Open:       'open <url|file>' or xdg-open in Fedora opens it on the Mac
   Commands:   lx --bin <cmd>  adds a Mac command that runs the Fedora one (lx --unbin <cmd>)
   Extras:     $cfgdir/packages (+ optional init.sh) are applied on every run
-  git/ssh:    your Mac ssh-agent is forwarded into Fedora; for HTTPS to GitHub run 'gh auth login'
+  git/ssh:    Fedora uses your Mac ssh config, known_hosts and Keychain keys (loaded at login);
+              for HTTPS to GitHub run 'gh auth login'
               once inside Fedora (other HTTPS hosts prompt once, then are cached for 8h)
   opencode:   config + MCPs shared with the Mac; logins are per-machine: in Fedora run
               'opencode auth login' per provider and 'opencode mcp auth <name>' per OAuth MCP

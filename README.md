@@ -50,8 +50,13 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 - GUI apps keep the Linux home (`$LINUX_HOME`) so their own settings live there. That's why
   Files opens on a near-empty home: your Mac home is the **Mac** bookmark in its sidebar (or
   Ctrl+L, `/Users/<you>`).
-- **git / ssh**: your Mac ssh-agent (Keychain keys included) is forwarded into Fedora, and shells keep
-  a stable `~/.ssh-agent.sock` link so GUI terminals get it too. For HTTPS, Linux shells override
+- **git / ssh**: your Mac ssh-agent is forwarded into Fedora, and shells keep a stable
+  `~/.ssh-agent.sock` link so GUI terminals get it too. ssh reads the Linux home, not `$HOME`, so
+  the installer puts a `# limabox:` header in `$LINUX_HOME/.ssh/config` that includes the Mac
+  `~/.ssh/config` and uses the Mac `known_hosts`. A login agent (`local.fedora-lima.ssh-keys`) runs
+  `ssh-add --apple-load-keychain`, since the macOS agent starts empty; if it has no keys, the
+  installer adds your default ones to it and the Keychain once. Keys the Mac config names by
+  `~/.ssh/...` path must be in the agent (the `~` means the Linux home in Fedora). For HTTPS, Linux shells override
   git's credential helper through `GIT_CONFIG_*` env vars (the shared `~/.gitconfig` is untouched):
   `gh` for github.com (run `gh auth login` once in Fedora; its config lives in `~/.linux/config/gh`)
   and an 8h memory cache for other hosts.
@@ -95,7 +100,6 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 - opencode v2 keeps logins in its database, per machine: in Fedora run `opencode auth login` and
   `opencode mcp auth <name>`. MCPs that run `/Applications/...` binaries can't work in Linux;
   ones that talk to Mac apps must use `host.lima.internal`, not `localhost`.
-- `ssh` in Fedora reads your Mac `~/.ssh/config`: add `IgnoreUnknown UseKeychain` if you use it.
 - `~/Documents` (also Desktop/Downloads if macOS asks) is empty in Fedora until the app that
   starts Lima (your terminal, or `limactl`) gets Full Disk Access in System Settings → Privacy &
   Security; restart the VM after. A symlink *into* Documents doesn't help; move the folder out
