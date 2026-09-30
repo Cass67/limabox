@@ -34,6 +34,7 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 | Open a URL/file on the Mac, from Fedora | `open .`, `open https://…`, `xdg-open file.pdf` (links clicked in Linux apps too) |
 | Use a Fedora command from a Mac terminal | `lx --bin rg` → `rg` on the Mac runs Fedora's; `lx --bin tree ltree` to rename; `lx --unbin rg` |
 | Extra packages / setup that survive a rebuild | list them in `~/.config/limabox/packages`, script in `~/.config/limabox/init.sh` (runs as root) |
+| Save what a rebuild needs | `lx --save-config` → Linux app settings into `~/.config/limabox/linux-home`, lists hand-installed packages missing from `packages` |
 | Stop / start / reset | `limactl stop default` / `limactl start default` / `limactl delete -f default && ./install.sh` |
 
 ## What you get
@@ -105,3 +106,22 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   Security; restart the VM after. A symlink *into* Documents doesn't help; move the folder out
   and symlink `~/Documents/<dir>` → `~/<dir>` instead.
 - Caps Lock can desync between Mac and Linux windows; press it twice.
+
+## Backup and rebuild
+
+The VM is disposable: everything needed to rebuild it lives on the Mac.
+
+- Already on the Mac: projects, dotfiles, `~/.linux` (Linux tool data, opencode/gh logins),
+  `~/.config/limabox`.
+- Only inside the VM: packages installed by hand, `/etc` tweaks, and the Linux home (GUI app
+  settings and data, e.g. a Linux Brave profile).
+- `lx --save-config` closes the gap for settings: it copies the Linux apps' config files and a dconf
+  dump into `~/.config/limabox/linux-home` (restored automatically when `install.sh` creates a new
+  VM) and lists packages you installed by hand that aren't in `~/.config/limabox/packages`.
+  User setup goes in `~/.config/limabox/user-init.sh` (runs as you) next to `init.sh` (root).
+- So `~/.config/limabox` is the whole recipe: keep it in a private git repo (review
+  `linux-home/.config/tabby/config.yaml` for host names first). Rebuild with
+  `limactl delete -f default && ./install.sh`, then log in again (`gh auth login`,
+  `opencode auth login`).
+- Before risky changes, an instant local snapshot: `limactl stop default && cp -c -R
+  ~/.lima/default ~/.lima-backup-default && limactl start default`.

@@ -103,6 +103,7 @@ if limactl list -q 2>/dev/null | grep -qx "$NAME"; then
 else
   step "Creating VM '$NAME' (Fedora, first boot installs packages: ~5 min)"
   limactl create --tty=false --name "$NAME" "$cfg"
+  created=1
 fi
 
 if [[ $(limactl list --format '{{.Status}}' "$NAME") != Running ]]; then
@@ -122,6 +123,16 @@ if ! limactl shell "$NAME" grep -qx 'ID=fedora' /etc/os-release; then
   echo "  keep it:    NAME=fedora $0" >&2
   echo "  replace it: limactl delete -f $NAME && $0" >&2
   exit 1
+fi
+
+# Apple M4-class CPUs expose SME (streaming SVE) but not SVE. Chromium-based renderers (Brave) treat
+# SME as SVE, execute SVE outside streaming mode and die with SIGILL in a crash loop (slow browsing,
+# systemd-coredump eating CPU). Hiding SME from the guest sends everything down the NEON paths.
+if limactl shell "$NAME" sh -c 'f=$(grep -m1 ^Features /proc/cpuinfo); case " $f " in *" sme "*) case " $f " in *" sve "*) exit 1 ;; esac; exit 0 ;; esac; exit 1' &&
+  ! limactl shell "$NAME" grep -qw arm64.nosme /proc/cmdline; then
+  step "Hiding SME from the VM (arm64.nosme; fixes Brave SIGILL crashes) and restarting it"
+  limactl shell "$NAME" sudo grubby --update-kernel=ALL --args=arm64.nosme
+  limactl stop "$NAME" && limactl start "$NAME"
 fi
 
 # Provisioning switches the login shell to zsh after Lima's SSH master and the systemd --user
@@ -194,12 +205,6 @@ limactl shell "$NAME" sh -c 'z=${LINUX_HOME:-$HOME}/.zdot; mkdir -p $z && for f 
     echo "[[ -r \$HOME/$f ]] && source \$HOME/$f"; echo "source /etc/zsh-mac-path"; } > $z/$f
 done'
 
-# Optional per-user setup runs in Fedora after shell wrappers are regenerated on each install.
-if [[ -f $HOME/.linux/limabox/init.sh ]]; then
-  step "Running per-user VM setup"
-  limactl shell "$NAME" bash "$HOME/.linux/limabox/init.sh"
-fi
-
 # One-time move of CLI data written before shells switched homes (e.g. opencode auth + sessions).
 limactl shell "$NAME" sh -c 'o=$LINUX_HOME/.local/share/opencode n=$HOME/.linux/share/opencode
   [ -n "$LINUX_HOME" ] && [ -d "$o" ] && [ ! -e "$n" ] && mkdir -p "${n%/*}" && mv "$o" "$n"; true'
@@ -211,6 +216,19 @@ mkdir -p "$cfgdir"
 [[ -e $cfgdir/packages ]] || cat >"$cfgdir/packages" <<'EOF'
 # Extra Fedora packages, one per line (# comments ok). Installed on every ./install.sh run.
 EOF
+# Record the packages the VM came with plus everything this installer installs, so lx --save-config
+# can report what was added by hand. Captured before the packages list is applied.
+known=/etc/limabox/known-packages
+if [[ -n ${created:-} ]] || ! limactl shell "$NAME" test -f $known; then
+  [[ -n ${created:-} ]] || echo "  note: package tracking starts now; anything dnf-installed by hand before this counts as" \
+    "known. Review once with: limactl shell $NAME dnf repoquery --userinstalled"
+  limactl shell "$NAME" sudo sh -c "mkdir -p /etc/limabox && dnf repoquery --userinstalled -q --qf '%{name}\n' >$known"
+fi
+{
+  awk '/dnf install -y \\/{f=1;next} f{print; if ($0 !~ /\\$/) exit}' "$cfg" | tr -d '\134' | xargs -n1
+  printf '%s\n' librsvg2-tools libdnf5-plugin-actions uv gh tabby-terminal
+} | limactl shell "$NAME" sudo sh -c "cat - $known | sort -u >$known.new && mv $known.new $known"
+
 read -r -a pkgs <<<"$(sed 's/#.*//' "$cfgdir/packages" | xargs)"
 if ((${#pkgs[@]})); then
   step "Installing packages from $cfgdir/packages: ${pkgs[*]}"
@@ -220,9 +238,31 @@ if [[ -f $cfgdir/init.sh ]]; then
   step "Running $cfgdir/init.sh in the VM as root"
   limactl shell "$NAME" sudo bash "$cfgdir/init.sh"
 fi
+# Per-user setup, run as you after the shell wrappers are regenerated. ~/.linux/limabox/init.sh is
+# the older location; lx --save-config moves it here.
+uinit=$cfgdir/user-init.sh
+[[ -f $uinit ]] || uinit=$HOME/.linux/limabox/init.sh
+if [[ -f $uinit ]]; then
+  step "Running $uinit in the VM as you"
+  limactl shell "$NAME" bash "$uinit"
+fi
 
 step "Setting Linux text scale to $TEXT_SCALE"
 limactl shell "$NAME" gsettings set org.gnome.desktop.interface text-scaling-factor "$TEXT_SCALE"
+
+# A rebuilt VM gets back the Linux app settings saved by lx --save-config.
+if [[ -n ${created:-} && -d $cfgdir/linux-home ]]; then
+  step "Restoring Linux app settings from $cfgdir/linux-home"
+  # dconf load rejects a whole file if any key is read-only (e.g. org/gnome/login-screen), so load
+  # each [section] on its own and skip the ones that refuse.
+  limactl shell "$NAME" sh -c 'lh=${LINUX_HOME:-$HOME}; cp -R "$1"/. "$lh"/ && rm -f "$lh/dconf.ini"
+    [ -f "$1/dconf.ini" ] || exit 0
+    t=$(mktemp -d); awk -v t="$t" "BEGIN{RS=\"\"} {print > (t \"/\" NR)}" "$1/dconf.ini"
+    for s in "$t"/*; do
+      p=$(head -1 "$s" | tr -d "[]"); [ "$p" = / ] && p= || p=/$p
+      { echo "[/]"; tail -n +2 "$s"; } | dconf load "$p/" 2>/dev/null || echo "  skipped read-only dconf section $p"
+    done; rm -rf "$t"' _ "$cfgdir/linux-home"
+fi
 
 step "Bookmarking the Mac home in Files (GUI apps start in the Linux home)"
 limactl shell "$NAME" sh -c 'b=${LINUX_HOME:-$HOME}/.config/gtk-3.0/bookmarks; mkdir -p ${b%/*}
@@ -329,7 +369,9 @@ sed -e "s|@NAME@|$NAME|g" -e "s|@APPS@|$APPS_DIR|g" -e "s|@LX@|$LX_DIR/lx|g" \
 # lx --bin <cmd> [name]: add a Mac command that runs <cmd> in the VM; lx --unbin <name> removes it.
 # lx --agent:      run by the LaunchAgent: open queued xdg-open requests, re-sync after dnf.
 # lx --display:    run by a LaunchAgent: keep the VM's Wayland display connected to Cocoa-Way.
-[[ $# -gt 0 ]] || { echo "usage: lx <app> [args] | --sync | --bin <cmd> [name] | --unbin <name>" >&2; exit 1; }
+# lx --save-config: snapshot Linux app settings into ~/.config/limabox and list packages added by
+#                  hand, so ~/.config/limabox alone is enough to rebuild the VM (commit it somewhere).
+[[ $# -gt 0 ]] || { echo "usage: lx <app> [args] | --sync | --bin <cmd> [name] | --unbin <name> | --save-config" >&2; exit 1; }
 
 if [[ $1 == --bin ]]; then
   [[ -n $2 ]] || { echo "usage: lx --bin <cmd> [name]" >&2; exit 1; }
@@ -355,6 +397,31 @@ if [[ $1 == --unbin ]]; then
   f=${0:A:h}/$2
   [[ -f $f && $(sed -n 2p $f) == "# limabox-bin:"* ]] || { echo "lx --unbin: $f is not a limabox wrapper" >&2; exit 1; }
   rm $f; echo "removed ${f/#$HOME/~}"; exit 0
+fi
+
+if [[ $1 == --save-config ]]; then
+  c=$HOME/.config/limabox
+  mkdir -p $c/linux-home
+  if [[ -f $HOME/.linux/limabox/init.sh && ! -e $c/user-init.sh ]]; then
+    mv $HOME/.linux/limabox/init.sh $c/user-init.sh && echo "moved ~/.linux/limabox/init.sh -> ${c/#$HOME/~}/user-init.sh"
+  fi
+  # Settings files only (no app data such as browser profiles), relative to the Linux home.
+  limactl shell @NAME@ sh -c 'lh=${LINUX_HOME:-$HOME} d=$1
+    for f in .config/tabby/config.yaml .config/foot/foot.ini .config/gtk-3.0/bookmarks .config/mimeapps.list; do
+      [ -f "$lh/$f" ] && mkdir -p "$d/${f%/*}" && cp "$lh/$f" "$d/$f"
+    done
+    HOME=$lh dconf dump / >"$d/dconf.ini"' _ $c/linux-home
+  echo "saved Linux app settings to ${c/#$HOME/~}/linux-home"
+  extra=$(limactl shell @NAME@ sh -c 'dnf repoquery --userinstalled -q --qf "%{name}\n" | sort -u |
+    comm -23 - /etc/limabox/known-packages' | grep -vxF -f <(sed 's/#.*//;s/[[:space:]]//g;/^$/d' $c/packages))
+  if [[ -n $extra ]]; then
+    print "installed by hand but not in ${c/#$HOME/~}/packages (add the ones to keep):"
+    print -l -- "  "${(f)^extra}
+  else
+    print "every hand-installed package is in ${c/#$HOME/~}/packages"
+  fi
+  print "commit ${c/#$HOME/~} (no secrets in it) to rebuild with: ./install.sh"
+  exit 0
 fi
 
 if [[ $1 == --agent ]]; then
