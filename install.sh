@@ -424,10 +424,10 @@ PLIST
 fi
 
 cw=$(getconf DARWIN_USER_TEMP_DIR)cocoa-way
-cocoa() { # Cocoa-Way must be up before a Linux app connects
-  [[ -S $cw/wayland-1 ]] && return
-  COCOA_WAY_PRESENTATION=rootless cocoa-way >/dev/null 2>&1 &!
-  for _ in {1..40}; do [[ -S $cw/wayland-1 ]] && break; sleep 0.25; done
+cocoa() { # launchd keeps Cocoa-Way running (local.fedora-lima.cocoa-way); nudge it if it's between restarts
+  pgrep -qx cocoa-way && [[ -S $cw/wayland-1 ]] && return
+  launchctl kickstart gui/$UID/local.fedora-lima.cocoa-way 2>/dev/null
+  for _ in {1..40}; do pgrep -qx cocoa-way && [[ -S $cw/wayland-1 ]] && break; sleep 0.25; done
 }
 
 # Run by a LaunchAgent: one persistent display for the whole VM. waypipe client (Mac, talks to
@@ -503,6 +503,32 @@ agent_plist "local.fedora-lima.display.$NAME" --display \
   '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
 
 step "Creating Mac launchers in $APPS_DIR"
+# Cocoa-Way itself runs under launchd: started at login and restarted if it quits or crashes, so a
+# Linux app started from inside the VM always has a compositor. Only one instance may own the
+# display socket, so any copy started outside launchd is stopped first.
+cocoa_label=local.fedora-lima.cocoa-way
+cat >"$HOME/Library/LaunchAgents/$cocoa_label.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$cocoa_label</string>
+  <key>ProgramArguments</key><array><string>$(brew --prefix)/bin/cocoa-way</string></array>
+  <key>EnvironmentVariables</key><dict>
+    <key>COCOA_WAY_PRESENTATION</key><string>rootless</string>
+    <key>TMPDIR</key><string>$(getconf DARWIN_USER_TEMP_DIR)</string>
+  </dict>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>StandardOutPath</key><string>$stampdir/cocoa-way.log</string>
+  <key>StandardErrorPath</key><string>$stampdir/cocoa-way.log</string>
+</dict></plist>
+PLIST
+if ! launchctl print "gui/$(id -u)/$cocoa_label" >/dev/null 2>&1; then
+  pkill -x cocoa-way || true
+  launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$cocoa_label.plist"
+fi
 "$LX_DIR/lx" --sync
 
 step "Installing login agent (opens xdg-open requests, re-syncs launchers after dnf)"
@@ -525,6 +551,8 @@ Done.
   Commands:   lx --bin <cmd>  adds a Mac command that runs the Fedora one (lx --unbin <cmd>)
   Extras:     $cfgdir/packages (+ optional init.sh) are applied on every run
   git/ssh:    your Mac ssh-agent is forwarded into Fedora; for HTTPS to GitHub run 'gh auth login'
+  Cocoa-Way:  kept running by launchd (quitting it restarts it); to turn it off:
+              launchctl bootout gui/\$(id -u)/local.fedora-lima.cocoa-way
               once inside Fedora (other HTTPS hosts prompt once, then are cached for 8h)
   opencode:   config + MCPs shared with the Mac; logins are per-machine: in Fedora run
               'opencode auth login' per provider and 'opencode mcp auth <name>' per OAuth MCP

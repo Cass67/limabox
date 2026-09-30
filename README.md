@@ -73,6 +73,10 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   gnome-terminal's Preferences, and apps started from a Linux shell.
 - `lx <app>` (Mac): makes sure Cocoa-Way runs, then starts the app with `systemd-run --user` in the
   current directory, so it gets the persistent display and the Linux home and outlives the call.
+- Cocoa-Way runs under launchd (`local.fedora-lima.cocoa-way`, KeepAlive): started at login and
+  restarted within seconds if it quits, is killed or crashes, so Linux apps started from inside
+  the VM always have a compositor (windows open at that moment close with it). Stop it for real
+  with `launchctl bootout gui/$(id -u)/local.fedora-lima.cocoa-way`.
 - `lx-apps` (VM) lists GUI `.desktop` entries + icons; `lx --sync` turns them into `.app` bundles.
 - A dnf5 `actions` hook writes `~/.cache/fedora-lima/<NAME>.stamp` after every transaction; a
   LaunchAgent (`local.fedora-lima.sync.<NAME>`) watches it plus the open queue
