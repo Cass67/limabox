@@ -13,6 +13,10 @@ LX_DIR=${LX_DIR:-$HOME/.local/bin}
 TEXT_SCALE=${TEXT_SCALE:-1.25}
 APPS_DIR=${APPS_DIR:-$HOME/Applications/Linux}
 CONFIG_DIR=${CONFIG_DIR:-$HOME/.config/limabox}
+# Home folders that hold per-OS installs. Inside the VM each is the Linux home's own copy, mounted
+# at the same path, so installers that hardcode them (or write them into ~/.zshrc) stay correct on
+# both systems. ~/.cargo, ~/.rustup and ~/go are redirected to ~/.linux instead (see mac-home.sh).
+LINUX_DIRS=(.local .bun .deno .nvm .volta .rbenv .opencode .dotnet) # not .pyenv/.sdkman: their installers refuse an existing (mounted) folder
 
 step() { printf '\n==> %s\n' "$*"; }
 
@@ -259,15 +263,16 @@ EOF
 # dotfile. Debian/Ubuntu build zsh to read /etc/zsh/zshenv instead of /etc/zshenv.
 limactl shell "$NAME" sudo sh -c '[ -d /etc/zsh ] && f=/etc/zsh/zshenv || f=/etc/zshenv
   grep -q mac-home.sh $f 2>/dev/null || echo ". /etc/profile.d/mac-home.sh" >>$f'
-limactl shell "$NAME" sudo tee /etc/zsh-mac-path >/dev/null <<'EOF'
+keep=$(printf '$HOME/%s/*|' "${LINUX_DIRS[@]}")
+sed "s#@KEEP@#${keep%|}#" <<'EOF' | limactl shell "$NAME" sudo tee /etc/zsh-mac-path >/dev/null
 # Sourced after each Mac zsh dotfile: drop Mac-only PATH entries, whose binaries are macOS builds
-# that cannot run here. ~/bin (usually scripts), ~/.linux (Linux tools) and ~/.local/bin (the
-# Linux one: see the ~/.local bind mount) stay.
+# that cannot run here. ~/bin (usually scripts), ~/.linux (Linux tools) and the folders mounted
+# from the Linux home (~/.local, ~/.bun, ...: see "Linux copies of per-OS install folders") stay.
 () {
   local d; local -a keep
   for d in $path; do
     case $d in
-      $HOME/bin|$HOME/.linux/*|$HOME/.local/bin) keep+=$d ;;
+      $HOME/bin|$HOME/.linux/*|@KEEP@) keep+=$d ;;
       $HOME/*|/opt/homebrew/*|/Applications/*|/Library/*|/System/*|/var/run/com.apple*) ;;
       *) keep+=$d ;;
     esac
@@ -282,17 +287,21 @@ limactl shell "$NAME" sh -c 'z=${LINUX_HOME:-$HOME}/.zdot; mkdir -p $z && for f 
     echo "[[ -r \$HOME/$f ]] && source \$HOME/$f"; echo "source /etc/zsh-mac-path"; } > $z/$f
 done'
 
-# Installers (Claude Code, oh-my-posh, pipx, ...) hardcode ~/.local/bin, which with the Mac home
-# as $HOME would put Linux binaries on the Mac's PATH (a Linux claude replaced the Mac one). Inside
-# the VM, ~/.local is the Linux home's .local instead (the same one GUI apps use); the Mac's own
-# ~/.local is untouched and simply not visible from Linux.
-step "Giving Linux its own ~/.local"
-mkdir -p "$HOME/.local" # the mount point
+# Installers hardcode folders like ~/.local/bin (Claude Code, oh-my-posh, pipx), ~/.opencode/bin
+# or ~/.bun, and with the Mac home as $HOME they would overwrite the Mac's own installs (a Linux
+# claude replaced the Mac one). Inside the VM those folders are the Linux home's instead; the Mac's
+# are untouched and simply not visible from Linux. ~/.local is the one GUI apps use too.
+step "Linux copies of per-OS install folders: ${LINUX_DIRS[*]}"
 lh=$(limactl shell "$NAME" sh -c 'echo ${LINUX_HOME:-$HOME}')
+for d in "${LINUX_DIRS[@]}"; do
+  mkdir -p "$HOME/$d" # the mount point
+  limactl shell "$NAME" mkdir -p "$lh/$d"
+  limactl shell "$NAME" sudo sh -c "grep -q ' $HOME/$d ' /etc/fstab ||
+    echo '$lh/$d $HOME/$d none bind,nofail,x-systemd.requires-mounts-for=$HOME 0 0' >>/etc/fstab"
+done
 limactl shell "$NAME" mkdir -p "$lh/.local/bin"
-limactl shell "$NAME" sudo sh -c "grep -q ' $HOME/.local ' /etc/fstab ||
-  echo '$lh/.local $HOME/.local none bind,nofail,x-systemd.requires-mounts-for=$HOME 0 0' >>/etc/fstab
-  systemctl daemon-reload; mountpoint -q $HOME/.local || mount $HOME/.local"
+limactl shell "$NAME" sudo sh -c "systemctl daemon-reload; for d in ${LINUX_DIRS[*]}; do
+  mountpoint -q $HOME/\$d || mount $HOME/\$d; done"
 
 # One-time move of CLI data written before shells switched homes (e.g. opencode auth + sessions).
 limactl shell "$NAME" sh -c 'o=$LINUX_HOME/.local/share/opencode n=$HOME/.linux/share/opencode

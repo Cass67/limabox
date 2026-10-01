@@ -119,10 +119,15 @@ from 2022, and Alpine has no systemd.
 - Chromium/Electron apps need `--ozone-platform=wayland` (there is no Xwayland); known ones get a
   wrapper in `/usr/local/bin`, unknown ones are detected by `lx-apps`. X11-only apps (Java/AWT)
   can't be shown.
-- Inside the VM, `~/.local` is the Linux home's (a bind mount), not the Mac's: installers that
-  hardcode `~/.local/bin` (Claude Code, oh-my-posh, pipx) put Linux binaries there, which would
-  otherwise land on the Mac's PATH and replace Mac commands. Linux PATH keeps `~/.local/bin`,
-  `~/.linux/bin` and `~/bin`; other Mac-home bin folders are dropped.
+- Inside the VM, per-OS install folders are the Linux home's own copies, bind-mounted at the same
+  paths: `~/.local`, `~/.bun`, `~/.deno`, `~/.nvm`, `~/.volta`, `~/.rbenv`, `~/.opencode`,
+  `~/.dotnet` (`LINUX_DIRS` in `install.sh`; the installer creates them on the Mac if missing).
+  Installers that hardcode them (Claude Code, oh-my-posh, pipx, bun, opencode) put Linux binaries
+  there instead of over the Mac's, and the PATH lines some of them append to `~/.zshrc` stay valid
+  on both systems. `~/.cargo`, `~/.rustup` and `~/go` go to `~/.linux` via environment variables.
+  pyenv and SDKMAN are not covered (their installers refuse an existing folder): install them with
+  `PYENV_ROOT` / `SDKMAN_DIR` under `~/.linux`. Linux PATH keeps these folders, `~/.linux` and
+  `~/bin`; other Mac-home bin folders are dropped.
 - opencode v2 keeps logins in its database, per machine: in the VM run `opencode auth login` and
   `opencode mcp auth <name>`. MCPs that run `/Applications/...` binaries can't work in Linux;
   ones that talk to Mac apps must use `host.lima.internal`, not `localhost`.
