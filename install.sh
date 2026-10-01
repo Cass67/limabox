@@ -227,7 +227,7 @@ if [ -d "/Users/$USER" ] && [ "$HOME" != "/Users/$USER" ]; then
   export XDG_CACHE_HOME=$HOME/.linux/cache
   export CARGO_HOME=$HOME/.linux/cargo RUSTUP_HOME=$HOME/.linux/rustup GOPATH=$HOME/.linux/go
   export PYTHONUSERBASE=$HOME/.linux/local
-  export PATH=$HOME/.linux/bin:$PYTHONUSERBASE/bin:$CARGO_HOME/bin:$GOPATH/bin:$PATH
+  export PATH=$HOME/.linux/bin:$HOME/.local/bin:$PYTHONUSERBASE/bin:$CARGO_HOME/bin:$GOPATH/bin:$PATH
   # zsh reads the Mac dotfiles through wrappers in $LINUX_HOME/.zdot (see /etc/zsh-mac-path).
   [ -n "$ZSH_VERSION" ] && export ZDOTDIR=$_lh/.zdot
   [ "$PWD" = "$_lh" ] && cd "$HOME"
@@ -261,12 +261,13 @@ limactl shell "$NAME" sudo sh -c '[ -d /etc/zsh ] && f=/etc/zsh/zshenv || f=/etc
   grep -q mac-home.sh $f 2>/dev/null || echo ". /etc/profile.d/mac-home.sh" >>$f'
 limactl shell "$NAME" sudo tee /etc/zsh-mac-path >/dev/null <<'EOF'
 # Sourced after each Mac zsh dotfile: drop Mac-only PATH entries, whose binaries are macOS builds
-# that cannot run here. ~/bin (usually scripts) and ~/.linux (Linux tools) stay.
+# that cannot run here. ~/bin (usually scripts), ~/.linux (Linux tools) and ~/.local/bin (the
+# Linux one: see the ~/.local bind mount) stay.
 () {
   local d; local -a keep
   for d in $path; do
     case $d in
-      $HOME/bin|$HOME/.linux/*) keep+=$d ;;
+      $HOME/bin|$HOME/.linux/*|$HOME/.local/bin) keep+=$d ;;
       $HOME/*|/opt/homebrew/*|/Applications/*|/Library/*|/System/*|/var/run/com.apple*) ;;
       *) keep+=$d ;;
     esac
@@ -280,6 +281,18 @@ limactl shell "$NAME" sh -c 'z=${LINUX_HOME:-$HOME}/.zdot; mkdir -p $z && for f 
   { [ $f = .zshrc ] && echo "HISTFILE=\$HOME/.zsh_history"
     echo "[[ -r \$HOME/$f ]] && source \$HOME/$f"; echo "source /etc/zsh-mac-path"; } > $z/$f
 done'
+
+# Installers (Claude Code, oh-my-posh, pipx, ...) hardcode ~/.local/bin, which with the Mac home
+# as $HOME would put Linux binaries on the Mac's PATH (a Linux claude replaced the Mac one). Inside
+# the VM, ~/.local is the Linux home's .local instead (the same one GUI apps use); the Mac's own
+# ~/.local is untouched and simply not visible from Linux.
+step "Giving Linux its own ~/.local"
+mkdir -p "$HOME/.local" # the mount point
+lh=$(limactl shell "$NAME" sh -c 'echo ${LINUX_HOME:-$HOME}')
+limactl shell "$NAME" mkdir -p "$lh/.local/bin"
+limactl shell "$NAME" sudo sh -c "grep -q ' $HOME/.local ' /etc/fstab ||
+  echo '$lh/.local $HOME/.local none bind,nofail,x-systemd.requires-mounts-for=$HOME 0 0' >>/etc/fstab
+  systemctl daemon-reload; mountpoint -q $HOME/.local || mount $HOME/.local"
 
 # One-time move of CLI data written before shells switched homes (e.g. opencode auth + sessions).
 limactl shell "$NAME" sh -c 'o=$LINUX_HOME/.local/share/opencode n=$HOME/.linux/share/opencode

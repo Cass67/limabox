@@ -119,6 +119,10 @@ from 2022, and Alpine has no systemd.
 - Chromium/Electron apps need `--ozone-platform=wayland` (there is no Xwayland); known ones get a
   wrapper in `/usr/local/bin`, unknown ones are detected by `lx-apps`. X11-only apps (Java/AWT)
   can't be shown.
+- Inside the VM, `~/.local` is the Linux home's (a bind mount), not the Mac's: installers that
+  hardcode `~/.local/bin` (Claude Code, oh-my-posh, pipx) put Linux binaries there, which would
+  otherwise land on the Mac's PATH and replace Mac commands. Linux PATH keeps `~/.local/bin`,
+  `~/.linux/bin` and `~/bin`; other Mac-home bin folders are dropped.
 - opencode v2 keeps logins in its database, per machine: in the VM run `opencode auth login` and
   `opencode mcp auth <name>`. MCPs that run `/Applications/...` binaries can't work in Linux;
   ones that talk to Mac apps must use `host.lima.internal`, not `localhost`.
