@@ -535,7 +535,8 @@ echo "StreamLocalBindUnlink yes" |
 limactl shell "$NAME" sudo systemctl reload sshd
 limactl shell "$NAME" sh -c 'd=${LINUX_HOME:-$HOME}/.config; mkdir -p $d/systemd/user $d/environment.d
   printf "WAYLAND_DISPLAY=wayland-limabox\nELECTRON_OZONE_PLATFORM_HINT=wayland\n" > $d/environment.d/limabox.conf
-  cat > $d/systemd/user/limabox-waypipe.service <<UNIT
+  u=$d/systemd/user/limabox-waypipe.service
+  cat > $u.new <<UNIT
 [Unit]
 Description=limabox: persistent Wayland display forwarded to Cocoa-Way on the Mac
 
@@ -549,9 +550,13 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 UNIT
+  # A running server keeps its old flags until restarted, and server and client must agree (e.g. on
+  # compression) or every app fails with "no compositor".
+  changed=; cmp -s $u.new $u || changed=1; mv $u.new $u
   systemctl --user daemon-reload
   systemctl --user set-environment WAYLAND_DISPLAY=wayland-limabox ELECTRON_OZONE_PLATFORM_HINT=wayland
   systemctl --user enable --now limabox-waypipe.service >/dev/null 2>&1
+  [ -z "$changed" ] || systemctl --user restart limabox-waypipe.service
   pkill -f '\''[g]nome-terminal-server'\''; true' # restarts on next use with the new display
 agent_plist() {                                   # label, lx mode, extra plist keys
   cat >"$HOME/Library/LaunchAgents/$1.plist" <<PLIST
@@ -604,6 +609,9 @@ cat >"$HOME/Library/LaunchAgents/$cocoa_label.plist" <<PLIST
     <key>TMPDIR</key><string>$(getconf DARWIN_USER_TEMP_DIR)</string>
   </dict>
   <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <!-- Without this launchd treats the agent as background and macOS coalesces its 4-16 ms frame
+       timers to ~80 ms: Linux apps were capped at 12.5 fps (YouTube 50% dropped). Now ~30 fps. -->
+  <key>ProcessType</key><string>Interactive</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>5</integer>
@@ -612,13 +620,15 @@ cat >"$HOME/Library/LaunchAgents/$cocoa_label.plist" <<PLIST
 </dict></plist>
 PLIST
 # (Re)load when not loaded or pointing at another binary; any copy outside launchd is stopped first.
-if ! launchctl print "gui/$(id -u)/$cocoa_label" 2>/dev/null | grep -qF "$cw_bin"; then
+if ! launchctl print "gui/$(id -u)/$cocoa_label" 2>/dev/null | grep -qF "$cw_bin" ||
+  ! cmp -s "$HOME/Library/LaunchAgents/$cocoa_label.plist" "$stampdir/cocoa-way.plist.loaded"; then
   launchctl bootout "gui/$(id -u)/$cocoa_label" 2>/dev/null || true
   pkill -x cocoa-way || true
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$cocoa_label.plist"
+  cp "$HOME/Library/LaunchAgents/$cocoa_label.plist" "$stampdir/cocoa-way.plist.loaded"
 fi
 agent_plist "local.fedora-lima.display.$NAME" --display \
-  '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
+  '<key>ProcessType</key><string>Interactive</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
 
 step "Making ssh/git in Fedora use your Mac ssh setup and keys"
 # ssh reads the passwd home ($LINUX_HOME), not $HOME: point it at the Mac config and known_hosts.

@@ -88,6 +88,9 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   restarted within seconds if it quits, is killed or crashes, so Linux apps started from inside
   the VM always have a compositor (windows open at that moment close with it). Stop it for real
   with `launchctl bootout gui/$(id -u)/local.fedora-lima.cocoa-way`.
+- Both display LaunchAgents set `ProcessType=Interactive`. Without it launchd treats them as
+  background work and macOS coalesces Cocoa-Way's 4–16 ms frame timers to ~80 ms, capping every
+  Linux app at 12.5 fps (YouTube in Linux Brave dropped half its frames; now ~30–40 fps, ~5% drops).
 - `lx <app>` (Mac): makes sure Cocoa-Way runs, then starts the app with `systemd-run --user` in the
   current directory, so it gets the persistent display and the Linux home and outlives the call.
 - `lx-apps` (VM) lists GUI `.desktop` entries + icons; `lx --sync` turns them into `.app` bundles.
