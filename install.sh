@@ -255,9 +255,10 @@ export GIT_CONFIG_COUNT=4 \
   GIT_CONFIG_KEY_2=credential.https://github.com.helper GIT_CONFIG_VALUE_2= \
   GIT_CONFIG_KEY_3=credential.https://github.com.helper GIT_CONFIG_VALUE_3='!/usr/bin/gh auth git-credential'
 EOF
-# /etc/zshenv runs for every zsh (before ~/.zshenv), so zsh picks it up before reading any dotfile.
-limactl shell "$NAME" sudo sh -c \
-  'grep -q mac-home.sh /etc/zshenv 2>/dev/null || echo ". /etc/profile.d/mac-home.sh" >> /etc/zshenv'
+# The global zshenv runs for every zsh (before ~/.zshenv), so zsh picks it up before reading any
+# dotfile. Debian/Ubuntu build zsh to read /etc/zsh/zshenv instead of /etc/zshenv.
+limactl shell "$NAME" sudo sh -c '[ -d /etc/zsh ] && f=/etc/zsh/zshenv || f=/etc/zshenv
+  grep -q mac-home.sh $f 2>/dev/null || echo ". /etc/profile.d/mac-home.sh" >>$f'
 limactl shell "$NAME" sudo tee /etc/zsh-mac-path >/dev/null <<'EOF'
 # Sourced after each Mac zsh dotfile: drop Mac-only PATH entries, whose binaries are macOS builds
 # that cannot run here. ~/bin (usually scripts) and ~/.linux (Linux tools) stay.
