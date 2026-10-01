@@ -1,45 +1,51 @@
 # limabox
 
-distrobox, but on a Mac: a Fedora VM (Lima) where your Mac home is your Linux home, plus Linux GUI
-apps as native macOS windows (Cocoa-Way rootless + waypipe) with Launchpad/Dock launchers that
-stay in sync with `dnf`.
+distrobox, but on a Mac: a Fedora or Ubuntu VM (Lima) where your Mac home is your Linux home, plus
+Linux GUI apps as native macOS windows (Cocoa-Way rootless + waypipe) with Launchpad/Dock launchers
+that stay in sync with `dnf` / `apt`.
 
 ## Install
 
 Needs Homebrew on Apple Silicon. Takes ~5 min the first time; safe to re-run (keeps the VM).
 
 ```bash
-./install.sh
+./install.sh                 # Fedora (latest)
+DISTRO=ubuntu ./install.sh   # Ubuntu (latest LTS)
 ```
 
 | Variable | Default | |
 |---|---|---|
+| `DISTRO` | `fedora` | `fedora` or `ubuntu`; both get the same apps and setup. Only used when creating the VM; re-runs keep its distro |
 | `NAME` | `default` | Lima instance name (`default` makes plain `lima` work) |
 | `LX_DIR` | `~/.local/bin` | where `lx` goes; must be on `PATH` |
 | `APPS_DIR` | `~/Applications/Linux` | Mac launchers (home Applications, not `/Applications`) |
 | `TEXT_SCALE` | `1.25` | Linux GUI text scale |
+| `CONFIG_DIR` | `~/.config/limabox` | extra packages, init scripts, saved settings (below) |
 
-If a Lima `default` VM already exists and is not Fedora, the installer stops: use
-`NAME=fedora ./install.sh` or `limactl delete -f default` first.
+If a Lima `default` VM already exists and limabox didn't make it, it must match `DISTRO` (so Lima's
+own default Ubuntu VM is only taken over with `DISTRO=ubuntu`); otherwise use `NAME=linux ./install.sh`
+or `limactl delete -f default` first. Other distros are left out on purpose: the display needs
+waypipe 0.10+ (Debian 13 and Ubuntu 24.04 ship older ones), Lima's only arm64 Arch image dates
+from 2022, and Alpine has no systemd.
 
 ## Use
 
 | | |
 |---|---|
-| Fedora shell (opens in the current Mac dir) | `lima` |
+| Linux shell (opens in the current Mac dir) | `lima` |
 | One command | `lima make`, `lima cargo build` |
 | GUI app | click it in `~/Applications/Linux` / Launchpad / Spotlight, or `lx tabby` |
-| Install / remove | `lima sudo dnf install -y <pkg>` — launchers appear/vanish on their own |
-| Rebuild launchers | `lx --sync` (e.g. after flatpak, which bypasses dnf) |
-| Open a URL/file on the Mac, from Fedora | `open .`, `open https://…`, `xdg-open file.pdf` (links clicked in Linux apps too) |
-| Use a Fedora command from a Mac terminal | `lx --bin rg` → `rg` on the Mac runs Fedora's; `lx --bin tree ltree` to rename; `lx --unbin rg` |
+| Install / remove | `lima sudo dnf install -y <pkg>` / `lima sudo apt install -y <pkg>` — launchers appear/vanish on their own |
+| Rebuild launchers | `lx --sync` (e.g. after flatpak, which bypasses the package manager) |
+| Open a URL/file on the Mac, from Linux | `open .`, `open https://…`, `xdg-open file.pdf` (links clicked in Linux apps too) |
+| Use a Linux command from a Mac terminal | `lx --bin rg` → `rg` on the Mac runs the VM's; `lx --bin tree ltree` to rename; `lx --unbin rg` |
 | Extra packages / setup that survive a rebuild | list them in `~/.config/limabox/packages`, script in `~/.config/limabox/init.sh` (runs as root) |
 | Save what a rebuild needs | `lx --save-config` → Linux app settings into `~/.config/limabox/linux-home`, lists hand-installed packages missing from `packages` |
 | Stop / start / reset | `limactl stop default` / `limactl start default` / `limactl delete -f default && ./install.sh` |
 
 ## What you get
 
-- Fedora on VZ + virtiofs, Rosetta for x86 binaries, sound on the Mac, dev toolchain, zsh, uv, opencode-v2, Brave,
+- Fedora or Ubuntu on VZ + virtiofs, Rosetta for x86 binaries, sound on the Mac, dev toolchain, zsh, uv, opencode-v2, Brave,
   Tabby (tabs on the left), gnome-terminal, foot, Files (nautilus).
 - **Seamless home**: shells get `HOME=/Users/<you>`, so all zsh dotfiles, aliases, `~/.ssh` and
   git config just work. Linux-only data (XDG data/state/cache, cargo, go, pip) goes to `~/.linux`.
@@ -51,20 +57,20 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 - GUI apps keep the Linux home (`$LINUX_HOME`) so their own settings live there. That's why
   Files opens on a near-empty home: your Mac home is the **Mac** bookmark in its sidebar (or
   Ctrl+L, `/Users/<you>`).
-- **git / ssh**: your Mac ssh-agent is forwarded into Fedora, and shells keep a stable
+- **git / ssh**: your Mac ssh-agent is forwarded into the VM, and shells keep a stable
   `~/.ssh-agent.sock` link so GUI terminals get it too. ssh reads the Linux home, not `$HOME`, so
   the installer puts a `# limabox:` header in `$LINUX_HOME/.ssh/config` that includes the Mac
   `~/.ssh/config` and uses the Mac `known_hosts`. A login agent (`local.fedora-lima.ssh-keys`) runs
   `ssh-add --apple-load-keychain`, since the macOS agent starts empty; if it has no keys, the
   installer adds your default ones to it and the Keychain once. Keys the Mac config names by
-  `~/.ssh/...` path must be in the agent (the `~` means the Linux home in Fedora). For HTTPS, Linux shells override
+  `~/.ssh/...` path must be in the agent (the `~` means the Linux home in the VM). For HTTPS, Linux shells override
   git's credential helper through `GIT_CONFIG_*` env vars (the shared `~/.gitconfig` is untouched):
-  `gh` for github.com (run `gh auth login` once in Fedora; its config lives in `~/.linux/config/gh`)
+  `gh` for github.com (run `gh auth login` once in the VM; its config lives in `~/.linux/config/gh`)
   and an 8h memory cache for other hosts.
-- **Open on the Mac**: `xdg-open`, `open`, `$BROWSER` and Fedora's default browser all hand off to
+- **Open on the Mac**: `xdg-open`, `open`, `$BROWSER` and the default browser all hand off to
   macOS `open`. The Mac side only accepts http(s)/mailto URLs and existing files under your home,
   and refuses app bundles and scripts (`.app`, `.command`, `.pkg`, …).
-- **Exported commands** (`lx --bin`): tiny wrappers next to `lx` that run the Fedora command in the
+- **Exported commands** (`lx --bin`): tiny wrappers next to `lx` that run the Linux command in the
   current directory; inside the VM the same wrapper runs the real command instead of itself.
 - **Declarative extras**: `~/.config/limabox/packages` and `init.sh` are applied on every
   `./install.sh`. Removing a line doesn't uninstall the package.
@@ -101,7 +107,7 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 - `lx <app>` (Mac): makes sure Cocoa-Way runs, then starts the app with `systemd-run --user` in the
   current directory, so it gets the persistent display and the Linux home and outlives the call.
 - `lx-apps` (VM) lists GUI `.desktop` entries + icons; `lx --sync` turns them into `.app` bundles.
-- A dnf5 `actions` hook writes `~/.cache/fedora-lima/<NAME>.stamp` after every transaction; a
+- A dnf5 `actions` hook (Ubuntu: `DPkg::Post-Invoke`) writes `~/.cache/fedora-lima/<NAME>.stamp` after every transaction; a
   LaunchAgent (`local.fedora-lima.sync.<NAME>`) watches it plus the open queue
   (`~/.cache/fedora-lima/open-<NAME>/`) and runs `lx --agent`, which opens queued requests and
   re-syncs launchers. No Mac ssh server is needed; everything goes through the shared home.
@@ -113,10 +119,10 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 - Chromium/Electron apps need `--ozone-platform=wayland` (there is no Xwayland); known ones get a
   wrapper in `/usr/local/bin`, unknown ones are detected by `lx-apps`. X11-only apps (Java/AWT)
   can't be shown.
-- opencode v2 keeps logins in its database, per machine: in Fedora run `opencode auth login` and
+- opencode v2 keeps logins in its database, per machine: in the VM run `opencode auth login` and
   `opencode mcp auth <name>`. MCPs that run `/Applications/...` binaries can't work in Linux;
   ones that talk to Mac apps must use `host.lima.internal`, not `localhost`.
-- `~/Documents` (also Desktop/Downloads if macOS asks) is empty in Fedora until the app that
+- `~/Documents` (also Desktop/Downloads if macOS asks) is empty in the VM until the app that
   starts Lima (your terminal, or `limactl`) gets Full Disk Access in System Settings → Privacy &
   Security; restart the VM after. A symlink *into* Documents doesn't help; move the folder out
   and symlink `~/Documents/<dir>` → `~/<dir>` instead.

@@ -1,15 +1,18 @@
 #!/bin/bash
 # shellcheck disable=SC2016  # single-quoted scripts are meant to expand inside the VM, not here
-# Distrobox-style Fedora on macOS: Lima VM + Cocoa-Way (rootless) for Linux GUI apps.
-#   ./install.sh                        # instance "default" (so plain `lima` works)
+# Distrobox-style Linux on macOS: Lima VM + Cocoa-Way (rootless) for Linux GUI apps.
+#   ./install.sh                        # Fedora, instance "default" (so plain `lima` works)
+#   DISTRO=ubuntu ./install.sh          # Ubuntu LTS instead
 #   NAME=dev ./install.sh               # other instance name
-# Safe to re-run: existing VM is started, not recreated.
+# Safe to re-run: existing VM is started, not recreated, and keeps its distro.
 set -euo pipefail
 
 NAME=${NAME:-default}
+DISTRO=${DISTRO:-}
 LX_DIR=${LX_DIR:-$HOME/.local/bin}
 TEXT_SCALE=${TEXT_SCALE:-1.25}
 APPS_DIR=${APPS_DIR:-$HOME/Applications/Linux}
+CONFIG_DIR=${CONFIG_DIR:-$HOME/.config/limabox}
 
 step() { printf '\n==> %s\n' "$*"; }
 
@@ -22,12 +25,36 @@ command -v brew >/dev/null || {
 step "Installing lima, cocoa-way, waypipe"
 brew install lima j-x-z/tap/cocoa-way j-x-z/tap/waypipe-darwin pulseaudio switchaudio-osx
 
+# An existing VM keeps its distro: one limabox made (it has /etc/limabox) is taken as is; any other
+# must match DISTRO, so e.g. Lima's own default Ubuntu VM isn't taken over by accident.
+if limactl list -q 2>/dev/null | grep -qx "$NAME"; then
+  [[ $(limactl list --format '{{.Status}}' "$NAME") == Running ]] || limactl start "$NAME"
+  id=$(limactl shell "$NAME" sh -c '. /etc/os-release; echo $ID')
+  if [[ -z $DISTRO ]] && limactl shell "$NAME" test -d /etc/limabox; then DISTRO=$id; fi
+  if [[ $id != "${DISTRO:-fedora}" ]]; then
+    echo "error: existing VM '$NAME' is $id, not ${DISTRO:-fedora}." >&2
+    [[ $id == fedora || $id == ubuntu ]] && echo "  use it:     DISTRO=$id $0" >&2
+    echo "  keep it:    NAME=linux $0" >&2
+    echo "  replace it: limactl delete -f $NAME && $0" >&2
+    exit 1
+  fi
+fi
+DISTRO=${DISTRO:-fedora}
+case $DISTRO in
+  fedora) template=fedora distro_name=Fedora pm='sudo dnf install -y' ;;
+  ubuntu) template=ubuntu-lts distro_name=Ubuntu pm='sudo apt install -y --no-install-recommends' ;;
+  *)
+    echo "error: DISTRO must be fedora or ubuntu (got '$DISTRO')" >&2
+    exit 1
+    ;;
+esac
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-cfg=$tmp/fedora.yaml
-cat >"$cfg" <<'EOF'
+cfg=$tmp/limabox.yaml
+sed "s|@TEMPLATE@|$template|" >"$cfg" <<'EOF'
 base:
-  - template:fedora
+  - template:@TEMPLATE@
 
 vmType: vz
 mountType: virtiofs
@@ -55,20 +82,50 @@ provision:
     script: |
       #!/bin/bash
       set -eux
-      curl -fsSLo /etc/yum.repos.d/brave-browser.repo \
-        https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
-      dnf install -y \
-        zsh git curl wget unzip which vim neovim htop tree xauth \
-        waypipe foot gnome-terminal nautilus dconf brave-browser ripgrep librsvg2-tools uv gh \
-        @development-tools gcc-c++ cmake ninja-build clang llvm \
-        python3-devel nodejs golang rust cargo java-25-openjdk-devel
+      . /etc/os-release
+      mkdir -p /etc/limabox
+      # Same tools on both distros, under each one's package names. The list is kept so
+      # lx --save-config can tell what was installed by hand later.
+      case $ID in
+        fedora)
+          curl -fsSLo /etc/yum.repos.d/brave-browser.repo \
+            https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
+          pkgs="zsh git curl wget unzip which vim neovim htop tree xauth
+            waypipe foot gnome-terminal nautilus dconf brave-browser ripgrep librsvg2-tools uv gh
+            libdnf5-plugin-actions gcc-c++ cmake ninja-build clang llvm
+            python3-devel nodejs golang rust cargo java-25-openjdk-devel"
+          dnf install -y @development-tools $pkgs
+          ;;
+        ubuntu)
+          export DEBIAN_FRONTEND=noninteractive
+          apt="apt-get -o DPkg::Lock::Timeout=600 -y -q" # cloud-init may still hold the lock
+          curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
+            https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+          curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
+            https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
+          pkgs="zsh git curl wget unzip vim neovim htop tree xauth
+            waypipe foot gnome-terminal nautilus dconf-cli brave-browser ripgrep librsvg2-bin gh
+            dbus-user-session xdg-utils libglib2.0-bin build-essential cmake ninja-build clang llvm
+            python3-dev nodejs npm golang-go rustc cargo openjdk-25-jdk"
+          $apt update
+          # Recommends would pull in whole desktops (budgie, nemo) as GUI apps.
+          $apt install --no-install-recommends $pkgs
+          # uv isn't packaged for Ubuntu: Astral's installer, once.
+          [ -x /usr/local/bin/uv ] || curl -LsSf https://astral.sh/uv/install.sh |
+            env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+          ;;
+      esac
+      echo $pkgs | tr ' ' '\n' > /etc/limabox/installer-packages
       usermod -s /bin/zsh "{{.User}}"
       # Tabby (terminal with side tabs): latest GitHub release, re-checked every boot.
       t=$(curl -fsSL https://api.github.com/repos/Eugeny/tabby/releases/latest \
         | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
       case $(uname -m) in aarch64) ta=arm64 ;; *) ta=x64 ;; esac
-      if [ -n "$t" ] && ! rpm -q "tabby-terminal-$t" >/dev/null 2>&1; then
-        dnf install -y "https://github.com/Eugeny/tabby/releases/download/v$t/tabby-$t-linux-$ta.rpm"
+      tabby=https://github.com/Eugeny/tabby/releases/download/v$t/tabby-$t-linux-$ta
+      if [ -n "$t" ] && [ "$ID" = fedora ] && ! rpm -q "tabby-terminal-$t" >/dev/null 2>&1; then
+        dnf install -y "$tabby.rpm"
+      elif [ -n "$t" ] && [ "$ID" = ubuntu ] && [ "$(dpkg-query -Wf '${Version}' tabby-terminal 2>/dev/null)" != "$t" ]; then
+        curl -fsSLo /tmp/tabby.deb "$tabby.deb" && $apt install --no-install-recommends /tmp/tabby.deb && rm /tmp/tabby.deb
       fi
       # Chromium/Electron apps need Wayland explicitly; Cocoa-Way rootless has no Xwayland.
       for app in brave-browser tabby; do
@@ -102,7 +159,7 @@ EOF
 if limactl list -q 2>/dev/null | grep -qx "$NAME"; then
   step "VM '$NAME' exists, keeping it (delete with: limactl delete -f $NAME)"
 else
-  step "Creating VM '$NAME' (Fedora, first boot installs packages: ~5 min)"
+  step "Creating VM '$NAME' ($distro_name, first boot installs packages: ~5 min)"
   limactl create --tty=false --name "$NAME" "$cfg"
   created=1
 fi
@@ -119,20 +176,19 @@ if ! grep -q 'forwardAgent: true' ~/.lima/"$NAME"/lima.yaml; then
   limactl start "$NAME"
 fi
 
-if ! limactl shell "$NAME" grep -qx 'ID=fedora' /etc/os-release; then
-  echo "error: existing VM '$NAME' is not Fedora (e.g. Lima's default Ubuntu)." >&2
-  echo "  keep it:    NAME=fedora $0" >&2
-  echo "  replace it: limactl delete -f $NAME && $0" >&2
-  exit 1
-fi
-
 # Apple M4-class CPUs expose SME (streaming SVE) but not SVE. Chromium-based renderers (Brave) treat
 # SME as SVE, execute SVE outside streaming mode and die with SIGILL in a crash loop (slow browsing,
 # systemd-coredump eating CPU). Hiding SME from the guest sends everything down the NEON paths.
 if limactl shell "$NAME" sh -c 'f=$(grep -m1 ^Features /proc/cpuinfo); case " $f " in *" sme "*) case " $f " in *" sve "*) exit 1 ;; esac; exit 0 ;; esac; exit 1' &&
   ! limactl shell "$NAME" grep -qw arm64.nosme /proc/cmdline; then
   step "Hiding SME from the VM (arm64.nosme; fixes Brave SIGILL crashes) and restarting it"
-  limactl shell "$NAME" sudo grubby --update-kernel=ALL --args=arm64.nosme
+  if [[ $DISTRO == fedora ]]; then
+    limactl shell "$NAME" sudo grubby --update-kernel=ALL --args=arm64.nosme
+  else # after the cloud image's 50-cloudimg-settings.cfg, which sets the default command line
+    echo 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT arm64.nosme"' |
+      limactl shell "$NAME" sudo tee /etc/default/grub.d/60-limabox.cfg >/dev/null
+    limactl shell "$NAME" sudo update-grub
+  fi
   limactl stop "$NAME" && limactl start "$NAME"
 fi
 
@@ -214,28 +270,33 @@ limactl shell "$NAME" sh -c 'o=$LINUX_HOME/.local/share/opencode n=$HOME/.linux/
 
 # Extra packages + setup script: declarative, re-applied on every run (distrobox --additional-packages
 # and --init-hooks). Both live on the Mac, so a rebuilt VM gets them back.
-cfgdir=$HOME/.config/limabox
+cfgdir=$CONFIG_DIR
 mkdir -p "$cfgdir"
-[[ -e $cfgdir/packages ]] || cat >"$cfgdir/packages" <<'EOF'
-# Extra Fedora packages, one per line (# comments ok). Installed on every ./install.sh run.
+[[ -e $cfgdir/packages ]] || cat >"$cfgdir/packages" <<EOF
+# Extra $distro_name packages, one per line (# comments ok). Installed on every ./install.sh run.
 EOF
+# Packages installed explicitly (not as dependencies), one name per line.
+limactl shell "$NAME" sudo tee /usr/local/bin/lx-manual-packages >/dev/null <<'EOF'
+#!/bin/sh
+if command -v dnf >/dev/null; then dnf repoquery --userinstalled -q --qf '%{name}\n'; else apt-mark showmanual; fi | sort -u
+EOF
+limactl shell "$NAME" sudo chmod 755 /usr/local/bin/lx-manual-packages
 # Record the packages the VM came with plus everything this installer installs, so lx --save-config
 # can report what was added by hand. Captured before the packages list is applied.
 known=/etc/limabox/known-packages
 if [[ -n ${created:-} ]] || ! limactl shell "$NAME" test -f $known; then
   [[ -n ${created:-} ]] || echo "  note: package tracking starts now; anything dnf-installed by hand before this counts as" \
-    "known. Review once with: limactl shell $NAME dnf repoquery --userinstalled"
-  limactl shell "$NAME" sudo sh -c "mkdir -p /etc/limabox && dnf repoquery --userinstalled -q --qf '%{name}\n' >$known"
+    "known. Review once with: limactl shell $NAME lx-manual-packages"
+  limactl shell "$NAME" sudo sh -c "mkdir -p /etc/limabox && lx-manual-packages >$known"
 fi
-{
-  awk '/dnf install -y \\/{f=1;next} f{print; if ($0 !~ /\\$/) exit}' "$cfg" | tr -d '\134' | xargs -n1
-  printf '%s\n' librsvg2-tools libdnf5-plugin-actions uv gh tabby-terminal
-} | limactl shell "$NAME" sudo sh -c "cat - $known | sort -u >$known.new && mv $known.new $known"
+limactl shell "$NAME" sudo sh -c "{ cat /etc/limabox/installer-packages 2>/dev/null; echo tabby-terminal; cat $known; } |
+  sort -u >$known.new && mv $known.new $known"
 
 read -r -a pkgs <<<"$(sed 's/#.*//' "$cfgdir/packages" | xargs)"
 if ((${#pkgs[@]})); then
   step "Installing packages from $cfgdir/packages: ${pkgs[*]}"
-  limactl shell "$NAME" sudo dnf install -y -q "${pkgs[@]}"
+  # shellcheck disable=SC2086 # $pm is a command line
+  limactl shell "$NAME" $pm -q "${pkgs[@]}"
 fi
 if [[ -f $cfgdir/init.sh ]]; then
   step "Running $cfgdir/init.sh in the VM as root"
@@ -273,10 +334,11 @@ step "Bookmarking the Mac home in Files (GUI apps start in the Linux home)"
 limactl shell "$NAME" sh -c 'b=${LINUX_HOME:-$HOME}/.config/gtk-3.0/bookmarks; mkdir -p ${b%/*}
   grep -qs "^file://$HOME " $b || echo "file://$HOME Mac" >>$b'
 
-step "Installing lx-apps (GUI app scanner) and dnf hook in the VM"
+step "Installing lx-apps (GUI app scanner) and package hook in the VM"
 stampdir=$HOME/.cache/fedora-lima # under ~ so the VM can write it
 mkdir -p "$stampdir"
-limactl shell "$NAME" sudo dnf install -y -q librsvg2-tools libdnf5-plugin-actions uv gh nautilus >/dev/null
+# VMs from before these were in the package list.
+[[ $DISTRO == ubuntu ]] || limactl shell "$NAME" sudo dnf install -y -q librsvg2-tools libdnf5-plugin-actions uv gh nautilus >/dev/null
 limactl shell "$NAME" sudo tee /usr/local/bin/lx-apps >/dev/null <<'EOF'
 #!/bin/bash
 # lx-apps OUTDIR: print GUI apps as id<TAB>name<TAB>command; write each icon to OUTDIR/<id>.png.
@@ -286,11 +348,15 @@ for f in /usr/share/applications/*.desktop /var/lib/flatpak/exports/share/applic
   [ -f "$f" ] || continue
   id=$(basename "$f" .desktop)
   case $skip in *" $id "*) continue ;; esac
-  case $id in java-*) continue ;; esac   # AWT is X11-only; Cocoa-Way rootless has no Xwayland
+  case $id in java-* | openjdk-*) continue ;; esac # AWT is X11-only; Cocoa-Way rootless has no Xwayland
   g=$(sed -n '/^\[Desktop Entry\]/,/^\[/p' "$f")
   get() { printf '%s\n' "$g" | sed -n "s/^$1=//p" | head -1; }
   [ "$(get Type)" = Application ] || continue
-  printf '%s\n' "$g" | grep -qiE '^(NoDisplay|Hidden|Terminal)=true|^OnlyShowIn=' && continue
+  printf '%s\n' "$g" | grep -qiE '^(NoDisplay|Hidden|Terminal)=true' && continue
+  # The apps are GNOME-flavoured (Ubuntu marks gnome-terminal OnlyShowIn=GNOME;Unity;).
+  o=$(get OnlyShowIn) n=$(get NotShowIn)
+  case ";$o" in ";" | *";GNOME;"*) ;; *) continue ;; esac
+  case ";$n" in *";GNOME;"*) continue ;; esac
   if [ -x "/usr/local/bin/$id" ]; then
     cmd=/usr/local/bin/$id
   else
@@ -322,14 +388,19 @@ for f in /usr/share/applications/*.desktop /var/lib/flatpak/exports/share/applic
 done
 EOF
 limactl shell "$NAME" sudo chmod 755 /usr/local/bin/lx-apps
-# Every dnf transaction rewrites the stamp; a launchd agent on the Mac watches it and runs lx --sync.
-# No .desktop file filter: dnf5 lacks filelists for not-yet-installed packages, so fresh installs
-# would never match. It must be a content write: launchd's WatchPaths ignores a bare touch.
+# Every dnf/apt transaction rewrites the stamp; a launchd agent on the Mac watches it and runs
+# lx --sync. No .desktop file filter: dnf5 lacks filelists for not-yet-installed packages, so fresh
+# installs would never match. It must be a content write: launchd's WatchPaths ignores a bare touch.
 printf '#!/bin/sh\ndate > %s\n' "$stampdir/$NAME.stamp" |
   limactl shell "$NAME" sudo tee /usr/local/bin/lx-stamp >/dev/null
 limactl shell "$NAME" sudo chmod 755 /usr/local/bin/lx-stamp
-echo "post_transaction::::/usr/local/bin/lx-stamp" |
-  limactl shell "$NAME" sudo tee /etc/dnf/libdnf5-plugins/actions.d/fedora-lima.actions >/dev/null
+if [[ $DISTRO == fedora ]]; then
+  echo "post_transaction::::/usr/local/bin/lx-stamp" |
+    limactl shell "$NAME" sudo tee /etc/dnf/libdnf5-plugins/actions.d/fedora-lima.actions >/dev/null
+else
+  echo 'DPkg::Post-Invoke { "/usr/local/bin/lx-stamp || true"; };' |
+    limactl shell "$NAME" sudo tee /etc/apt/apt.conf.d/80limabox >/dev/null
+fi
 
 step "Routing xdg-open/open in the VM to macOS open"
 queue=$stampdir/open-$NAME
@@ -354,6 +425,7 @@ done
 EOF
 limactl shell "$NAME" sudo sh -c 'chmod 755 /usr/local/bin/xdg-open && ln -sfn xdg-open /usr/local/bin/open'
 # GUI apps that ask GIO for the default browser (instead of calling xdg-open) get it too.
+limactl shell "$NAME" sudo mkdir -p /usr/local/share/applications
 limactl shell "$NAME" sudo tee /usr/local/share/applications/limabox-mac-open.desktop >/dev/null <<'EOF'
 [Desktop Entry]
 Type=Application
@@ -366,17 +438,17 @@ limactl shell "$NAME" sh -c 'BROWSER= HOME=${LINUX_HOME:-$HOME} XDG_CONFIG_HOME=
 
 step "Installing lx to $LX_DIR"
 mkdir -p "$LX_DIR"
-sed -e "s|@NAME@|$NAME|g" -e "s|@APPS@|$APPS_DIR|g" -e "s|@LX@|$LX_DIR/lx|g" \
+sed -e "s|@NAME@|$NAME|g" -e "s|@APPS@|$APPS_DIR|g" -e "s|@LX@|$LX_DIR/lx|g" -e "s|@CFG@|$cfgdir|g" \
   -e "s|@BREW@|$(brew --prefix)/bin|g" >"$LX_DIR/lx" <<'EOF'
 #!/bin/zsh
 # lx <app> [args]: run a Linux GUI app from the Lima VM as native macOS windows (Cocoa-Way rootless).
 # lx --sync:       (re)build the Mac launchers in @APPS@ from the VM's installed GUI apps.
 # lx --bin <cmd> [name]: add a Mac command that runs <cmd> in the VM; lx --unbin <name> removes it.
-# lx --agent:      run by the LaunchAgent: open queued xdg-open requests, re-sync after dnf.
+# lx --agent:      run by the LaunchAgent: open queued xdg-open requests, re-sync after installs.
 # lx --display:    run by a LaunchAgent: keep the VM's Wayland display connected to Cocoa-Way.
 # lx --sound:      run by a LaunchAgent: Mac PulseAudio server for the VM, following the Mac output.
-# lx --save-config: snapshot Linux app settings into ~/.config/limabox and list packages added by
-#                  hand, so ~/.config/limabox alone is enough to rebuild the VM (commit it somewhere).
+# lx --save-config: snapshot Linux app settings into @CFG@ and list packages added by
+#                  hand, so @CFG@ alone is enough to rebuild the VM (commit it somewhere).
 [[ $# -gt 0 ]] || { echo "usage: lx <app> [args] | --sync | --bin <cmd> [name] | --unbin <name> | --save-config" >&2; exit 1; }
 
 if [[ $1 == --bin ]]; then
@@ -388,7 +460,7 @@ if [[ $1 == --bin ]]; then
   fi
   cat >$f <<BIN
 #!/bin/sh
-# limabox-bin: runs '$2' in the Fedora VM '@NAME@' (in the current directory)
+# limabox-bin: runs '$2' in the Linux VM '@NAME@' (in the current directory)
 if [ "\$(uname -s)" = Linux ]; then # this dir can be on PATH inside the VM too: run the real one
   me=\$(dirname "\$0") IFS=:
   for d in \$PATH; do [ "\$d" != "\$me" ] && [ -x "\$d/$2" ] && exec "\$d/$2" "\$@"; done
@@ -406,7 +478,7 @@ if [[ $1 == --unbin ]]; then
 fi
 
 if [[ $1 == --save-config ]]; then
-  c=$HOME/.config/limabox
+  c=@CFG@
   mkdir -p $c/linux-home
   if [[ -f $HOME/.linux/limabox/init.sh && ! -e $c/user-init.sh ]]; then
     mv $HOME/.linux/limabox/init.sh $c/user-init.sh && echo "moved ~/.linux/limabox/init.sh -> ${c/#$HOME/~}/user-init.sh"
@@ -418,8 +490,8 @@ if [[ $1 == --save-config ]]; then
     done
     HOME=$lh dconf dump / >"$d/dconf.ini"' _ $c/linux-home
   echo "saved Linux app settings to ${c/#$HOME/~}/linux-home"
-  extra=$(limactl shell @NAME@ sh -c 'dnf repoquery --userinstalled -q --qf "%{name}\n" | sort -u |
-    comm -23 - /etc/limabox/known-packages' | grep -vxF -f <(sed 's/#.*//;s/[[:space:]]//g;/^$/d' $c/packages))
+  extra=$(limactl shell @NAME@ sh -c 'lx-manual-packages | comm -23 - /etc/limabox/known-packages' |
+    grep -vxF -f <(sed 's/#.*//;s/[[:space:]]//g;/^$/d' $c/packages))
   if [[ -n $extra ]]; then
     print "installed by hand but not in ${c/#$HOME/~}/packages (add the ones to keep):"
     print -l -- "  "${(f)^extra}
@@ -568,7 +640,7 @@ step "Setting up the persistent Linux display (wayland-limabox)"
 # sshd must replace the tunnel's socket when the Mac reconnects after a VM restart.
 echo "StreamLocalBindUnlink yes" |
   limactl shell "$NAME" sudo tee /etc/ssh/sshd_config.d/60-limabox.conf >/dev/null
-limactl shell "$NAME" sudo systemctl reload sshd
+limactl shell "$NAME" sudo sh -c 'systemctl reload sshd 2>/dev/null || systemctl reload ssh'
 limactl shell "$NAME" sh -c 'd=${LINUX_HOME:-$HOME}/.config; mkdir -p $d/systemd/user $d/environment.d
   printf "WAYLAND_DISPLAY=wayland-limabox\nELECTRON_OZONE_PLATFORM_HINT=wayland\nPULSE_SERVER=unix:/tmp/limabox-pulse.sock\nPULSE_LATENCY_MSEC=60\n" > $d/environment.d/limabox.conf
   u=$d/systemd/user/limabox-waypipe.service
@@ -615,8 +687,8 @@ mkdir -p ~/Library/LaunchAgents
 # Cocoa-Way 2.0.3 with local fixes (patches/cocoa-way.patch), built from a pinned upstream commit:
 # - NSCursor hide/unhide balanced, and unhidden when the pointer leaves or its window closes, so a
 #   cursor hidden by YouTube doesn't stay invisible until a click;
-# - no native title bar for clients that draw their own (GTK4: gnome-terminal, Files), which
-#   otherwise get two stacked title bars.
+# - an invisible native title bar for clients that draw their own (GTK4: gnome-terminal, Files;
+#   Firefox), which otherwise get two stacked title bars; the window stays titled so it resizes.
 cw_rev=e1ff9b9b333a826ba507fb8d8010f4c6ce2d4b93
 cw_patch=$(cd "$(dirname "$0")" && pwd)/patches/cocoa-way.patch
 cw_bin=$HOME/.local/share/limabox/cocoa-way
@@ -672,7 +744,7 @@ fi
 agent_plist "local.fedora-lima.display.$NAME" --display \
   '<key>ProcessType</key><string>Interactive</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
 
-step "Making ssh/git in Fedora use your Mac ssh setup and keys"
+step "Making ssh/git in $distro_name use your Mac ssh setup and keys"
 # ssh reads the passwd home ($LINUX_HOME), not $HOME: point it at the Mac config and known_hosts.
 limactl shell "$NAME" sh -c 'c=${LINUX_HOME:-$HOME}/.ssh/config; mkdir -p -m 700 ${c%/*}; touch $c
   grep -q "^# limabox:" $c || { printf "%s\n" "# limabox: use the Mac ~/.ssh (ssh reads the Linux home, not \$HOME)" \
@@ -703,7 +775,7 @@ agent_plist "local.fedora-lima.sound.$NAME" --sound \
 step "Creating Mac launchers in $APPS_DIR"
 "$LX_DIR/lx" --sync
 
-step "Installing login agent (opens xdg-open requests, re-syncs launchers after dnf)"
+step "Installing login agent (opens xdg-open requests, re-syncs launchers after installs)"
 touch "$stampdir/$NAME.stamp"
 agent_plist "local.fedora-lima.sync.$NAME" --agent "<key>WatchPaths</key><array><string>$stampdir/$NAME.stamp</string><string>$queue</string></array>
   <key>ThrottleInterval</key><integer>1</integer>"
@@ -716,20 +788,20 @@ cat <<EOF
 Done.
   Shell:      $([[ $NAME == default ]] && echo lima || echo "limactl shell $NAME")   (opens in your current Mac directory)
   Home:       shells use your Mac home and dotfiles; Linux-only data goes to ~/.linux
-  GUI apps:   Launchpad/Finder: $APPS_DIR (drag to the Dock; kept in sync after dnf install/remove)
+  GUI apps:   Launchpad/Finder: $APPS_DIR (drag to the Dock; kept in sync after installs/removals)
               or from a Mac terminal: lx tabby | lx gnome-terminal | lx nautilus | lx brave-browser | lx foot
-  Resync:     lx --sync   (e.g. after flatpak installs, which bypass dnf)
+  Resync:     lx --sync   (e.g. after flatpak installs, which bypass the package manager)
   Cocoa-Way:  kept running by launchd (quitting it restarts it); to turn it off:
               launchctl bootout gui/\$(id -u)/local.fedora-lima.cocoa-way
-  Open:       'open <url|file>' or xdg-open in Fedora opens it on the Mac
-  Commands:   lx --bin <cmd>  adds a Mac command that runs the Fedora one (lx --unbin <cmd>)
+  Open:       'open <url|file>' or xdg-open in $distro_name opens it on the Mac
+  Commands:   lx --bin <cmd>  adds a Mac command that runs the $distro_name one (lx --unbin <cmd>)
   Extras:     $cfgdir/packages (+ optional init.sh) are applied on every run
-  git/ssh:    Fedora uses your Mac ssh config, known_hosts and Keychain keys (loaded at login);
+  git/ssh:    $distro_name uses your Mac ssh config, known_hosts and Keychain keys (loaded at login);
               for HTTPS to GitHub run 'gh auth login'
-              once inside Fedora (other HTTPS hosts prompt once, then are cached for 8h)
-  opencode:   config + MCPs shared with the Mac; logins are per-machine: in Fedora run
+              once inside $distro_name (other HTTPS hosts prompt once, then are cached for 8h)
+  opencode:   config + MCPs shared with the Mac; logins are per-machine: in $distro_name run
               'opencode auth login' per provider and 'opencode mcp auth <name>' per OAuth MCP
-  Packages:   $([[ $NAME == default ]] && echo lima || echo "limactl shell $NAME") sudo dnf install -y <pkg>
+  Packages:   $([[ $NAME == default ]] && echo lima || echo "limactl shell $NAME") $pm <pkg>
   Text size:  TEXT_SCALE=1.5 $0
 
 Your Mac ~/.zshrc is also the VM's. Wrap Mac-only lines (brew shellenv, Mac paths) in:
