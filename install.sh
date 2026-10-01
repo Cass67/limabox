@@ -105,7 +105,10 @@ provision:
             https://brave-browser-apt-release.s3.brave.com/brave-browser.sources
           pkgs="zsh git curl wget unzip vim neovim htop tree xauth
             waypipe foot gnome-terminal nautilus dconf-cli brave-browser ripgrep librsvg2-bin gh
-            dbus-user-session xdg-utils libglib2.0-bin build-essential cmake ninja-build clang llvm
+            dbus-user-session xdg-utils libglib2.0-bin libpulse0
+            fonts-adwaita fonts-cantarell fonts-noto-core fonts-noto-color-emoji fonts-dejavu
+            fonts-liberation fonts-urw-base35 fonts-droid-fallback
+            build-essential cmake ninja-build clang llvm
             python3-dev nodejs npm golang-go rustc cargo openjdk-25-jdk"
           $apt update
           # Recommends would pull in whole desktops (budgie, nemo) as GUI apps.
