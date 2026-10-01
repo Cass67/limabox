@@ -644,7 +644,8 @@ if [[ $1 == --sound ]]; then
   d=$HOME/.cache/fedora-lima p=$d/pulse-@NAME@
   mkdir -p $p
   rm -f $p.sock
-  print -l "load-module module-coreaudio-detect record=false playback=true" \
+  # Larger CoreAudio callback buffer avoids audible clicks with the default 512 frames.
+  print -l "load-module module-coreaudio-detect record=false playback=true ioproc_frames=2048" \
     "load-module module-native-protocol-unix socket=$p.sock auth-anonymous=1" \
     "load-module module-always-sink" >$p.pa
   export PULSE_RUNTIME_PATH=$p PULSE_STATE_PATH=$p PULSE_SERVER=unix:$p.sock
