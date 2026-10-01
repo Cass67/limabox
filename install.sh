@@ -116,14 +116,16 @@ provision:
             dbus-user-session xdg-utils libglib2.0-bin libpulse0
             fonts-adwaita fonts-cantarell fonts-noto-core fonts-noto-color-emoji fonts-dejavu
             fonts-liberation fonts-urw-base35 fonts-droid-fallback
-            build-essential cmake ninja-build clang llvm
+            gcc g++ make libc6-dev dpkg-dev libcrypt-dev cmake ninja-build clang llvm
             python3-dev nodejs npm golang-go rustc cargo openjdk-25-jdk"
           $apt update
+          # GNU coreutils, like Fedora, via Ubuntu's own switch: 26.04's uutils ls misaligns long
+          # listings of Mac files (uutils#14026). The toolchain is listed piecemeal above because
+          # the build-essential meta-package depends on uutils.
+          dpkg -s coreutils-from-gnu >/dev/null 2>&1 ||
+            $apt install --allow-remove-essential coreutils-from-gnu coreutils-from-uutils-
           # Recommends would pull in whole desktops (budgie, nemo) as GUI apps.
           $apt install --no-install-recommends $pkgs
-          # 26.04's ls is uutils, which pads its long listing out to the terminal width on some
-          # terminals; use GNU's. The rest of uutils stays: build-essential depends on it.
-          for c in ls dir vdir; do ln -sf /usr/bin/gnu$c /usr/local/bin/$c; done
           # uv isn't packaged for Ubuntu: Astral's installer, once.
           [ -x /usr/local/bin/uv ] || curl -LsSf https://astral.sh/uv/install.sh |
             env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
