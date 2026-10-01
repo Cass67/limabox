@@ -624,7 +624,10 @@ if [[ ! -x $cw_bin || $(cat "$cw_bin.rev" 2>/dev/null) != "$cw_stamp" ]]; then
   git -C "$tmp/cocoa-way" apply "$cw_patch"
   (cd "$tmp/cocoa-way" && cargo build --release --locked --quiet --bin cocoa-way)
   mkdir -p "${cw_bin%/*}"
-  cp "$tmp/cocoa-way/target/release/cocoa-way" "$cw_bin"
+  # Replace via rename, never in place: macOS caches a binary's code signature per file and
+  # kills a rewritten one at launch (OS_REASON_CODESIGNING).
+  cp "$tmp/cocoa-way/target/release/cocoa-way" "$cw_bin.new"
+  mv -f "$cw_bin.new" "$cw_bin"
   echo "$cw_stamp" >"$cw_bin.rev"
   launchctl kill TERM "gui/$(id -u)/local.fedora-lima.cocoa-way" 2>/dev/null || true # KeepAlive restarts it
 fi
@@ -654,7 +657,7 @@ cat >"$HOME/Library/LaunchAgents/$cocoa_label.plist" <<PLIST
 </dict></plist>
 PLIST
 # (Re)load when not loaded or pointing at another binary; any copy outside launchd is stopped first.
-if ! launchctl print "gui/$(id -u)/$cocoa_label" 2>/dev/null | grep -qF "$cw_bin" ||
+if ! launchctl print "gui/$(id -u)/$cocoa_label" 2>/dev/null | grep -qx "[[:space:]]*program = $cw_bin" ||
   ! cmp -s "$HOME/Library/LaunchAgents/$cocoa_label.plist" "$stampdir/cocoa-way.plist.loaded"; then
   launchctl bootout "gui/$(id -u)/$cocoa_label" 2>/dev/null || true
   pkill -x cocoa-way || true
