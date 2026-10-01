@@ -39,7 +39,7 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
 
 ## What you get
 
-- Fedora on VZ + virtiofs, Rosetta for x86 binaries, dev toolchain, zsh, uv, opencode-v2, Brave,
+- Fedora on VZ + virtiofs, Rosetta for x86 binaries, sound on the Mac, dev toolchain, zsh, uv, opencode-v2, Brave,
   Tabby (tabs on the left), gnome-terminal, foot, Files (nautilus).
 - **Seamless home**: shells get `HOME=/Users/<you>`, so all zsh dotfiles, aliases, `~/.ssh` and
   git config just work. Linux-only data (XDG data/state/cache, cargo, go, pip) goes to `~/.linux`.
@@ -88,6 +88,11 @@ If a Lima `default` VM already exists and is not Fedora, the installer stops: us
   restarted within seconds if it quits, is killed or crashes, so Linux apps started from inside
   the VM always have a compositor (windows open at that moment close with it). Stop it for real
   with `launchctl bootout gui/$(id -u)/local.fedora-lima.cocoa-way`.
+- **Sound**: `lx --sound` (LaunchAgent `local.fedora-lima.sound.<NAME>`) runs an output-only
+  PulseAudio server on the Mac (CoreAudio, no microphone) on a unix socket that the display tunnel
+  carries into the VM as `/tmp/limabox-pulse.sock`. `PULSE_SERVER` points every app there and
+  `PULSE_LATENCY_MSEC=60` stops gaps over the tunnel. It follows the macOS output device
+  (`SwitchAudioSource`) and moves playing streams when you switch.
 - Both display LaunchAgents set `ProcessType=Interactive`. Without it launchd treats them as
   background work and macOS coalesces Cocoa-Way's 4–16 ms frame timers to ~80 ms, capping every
   Linux app at 12.5 fps (YouTube in Linux Brave dropped half its frames; now ~30–40 fps, ~5% drops).

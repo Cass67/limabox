@@ -20,7 +20,7 @@ command -v brew >/dev/null || {
 [[ $(uname -m) == arm64 ]] || echo "warning: tested on Apple Silicon only" >&2
 
 step "Installing lima, cocoa-way, waypipe"
-brew install lima j-x-z/tap/cocoa-way j-x-z/tap/waypipe-darwin
+brew install lima j-x-z/tap/cocoa-way j-x-z/tap/waypipe-darwin pulseaudio switchaudio-osx
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -162,6 +162,8 @@ if [ -d "/Users/$USER" ] && [ "$HOME" != "/Users/$USER" ]; then
 fi
 export BROWSER=/usr/local/bin/xdg-open # opens on the Mac, see lx --agent
 export WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-limabox} # persistent display, see lx --display
+export PULSE_SERVER=${PULSE_SERVER:-unix:/tmp/limabox-pulse.sock} # sound plays on the Mac, see lx --sound
+export PULSE_LATENCY_MSEC=${PULSE_LATENCY_MSEC:-60} # bigger buffers: no gaps over the tunnel
 
 # The forwarded Mac ssh-agent socket changes per ssh session; keep a stable link so shells started
 # later (GUI terminals, which aren't ssh sessions) find it too.
@@ -369,6 +371,7 @@ sed -e "s|@NAME@|$NAME|g" -e "s|@APPS@|$APPS_DIR|g" -e "s|@LX@|$LX_DIR/lx|g" \
 # lx --bin <cmd> [name]: add a Mac command that runs <cmd> in the VM; lx --unbin <name> removes it.
 # lx --agent:      run by the LaunchAgent: open queued xdg-open requests, re-sync after dnf.
 # lx --display:    run by a LaunchAgent: keep the VM's Wayland display connected to Cocoa-Way.
+# lx --sound:      run by a LaunchAgent: Mac PulseAudio server for the VM, following the Mac output.
 # lx --save-config: snapshot Linux app settings into ~/.config/limabox and list packages added by
 #                  hand, so ~/.config/limabox alone is enough to rebuild the VM (commit it somewhere).
 [[ $# -gt 0 ]] || { echo "usage: lx <app> [args] | --sync | --bin <cmd> [name] | --unbin <name> | --save-config" >&2; exit 1; }
@@ -515,9 +518,39 @@ if [[ $1 == --display ]]; then
   while :; do # reconnect whenever the VM restarts
     ssh -F ~/.lima/@NAME@/ssh.config -o ControlMaster=no -o ControlPath=none \
       -o ExitOnForwardFailure=yes -o ServerAliveInterval=10 -o ConnectTimeout=5 \
-      -N -R /tmp/limabox-waypipe.sock:$sock lima-@NAME@
+      -N -R /tmp/limabox-waypipe.sock:$sock -R /tmp/limabox-pulse.sock:$HOME/.cache/fedora-lima/pulse-@NAME@.sock lima-@NAME@
     sleep 5
   done
+fi
+
+# Run by a LaunchAgent: sound. An output-only PulseAudio server on the Mac (CoreAudio, no microphone)
+# listening on a unix socket that lx --display tunnels into the VM as /tmp/limabox-pulse.sock, where
+# PULSE_SERVER points every app. Follows the macOS output device and moves playing streams along.
+if [[ $1 == --sound ]]; then
+  d=$HOME/.cache/fedora-lima p=$d/pulse-@NAME@
+  mkdir -p $p
+  rm -f $p.sock
+  print -l "load-module module-coreaudio-detect record=false playback=true" \
+    "load-module module-native-protocol-unix socket=$p.sock auth-anonymous=1" \
+    "load-module module-always-sink" >$p.pa
+  export PULSE_RUNTIME_PATH=$p PULSE_STATE_PATH=$p PULSE_SERVER=unix:$p.sock
+  pulseaudio -n -F $p.pa --exit-idle-time=-1 --daemonize=no --log-level=error &
+  pa=$!
+  trap "kill $pa 2>/dev/null" EXIT
+  last=
+  while kill -0 $pa 2>/dev/null; do
+    out=$(SwitchAudioSource -c -t output 2>/dev/null)
+    if [[ -n $out && $out != "$last" ]]; then
+      sink=$(pactl list sinks 2>/dev/null | awk -v want="$out" \
+        '/^\tName: /{n=$2} /^\tDescription: /{sub(/^\tDescription: /,""); if ($0 == want) {print n; exit}}')
+      if [[ -n $sink ]] && pactl set-default-sink $sink 2>/dev/null; then
+        for i in ${(f)"$(pactl list short sink-inputs 2>/dev/null | cut -f1)"}; do pactl move-sink-input $i $sink; done
+        last=$out
+      fi
+    fi
+    sleep 3
+  done
+  exit 1
 fi
 
 # GUI apps start under the VM's systemd --user manager: they get the persistent display and the
@@ -534,7 +567,7 @@ echo "StreamLocalBindUnlink yes" |
   limactl shell "$NAME" sudo tee /etc/ssh/sshd_config.d/60-limabox.conf >/dev/null
 limactl shell "$NAME" sudo systemctl reload sshd
 limactl shell "$NAME" sh -c 'd=${LINUX_HOME:-$HOME}/.config; mkdir -p $d/systemd/user $d/environment.d
-  printf "WAYLAND_DISPLAY=wayland-limabox\nELECTRON_OZONE_PLATFORM_HINT=wayland\n" > $d/environment.d/limabox.conf
+  printf "WAYLAND_DISPLAY=wayland-limabox\nELECTRON_OZONE_PLATFORM_HINT=wayland\nPULSE_SERVER=unix:/tmp/limabox-pulse.sock\nPULSE_LATENCY_MSEC=60\n" > $d/environment.d/limabox.conf
   u=$d/systemd/user/limabox-waypipe.service
   cat > $u.new <<UNIT
 [Unit]
@@ -554,7 +587,8 @@ UNIT
   # compression) or every app fails with "no compositor".
   changed=; cmp -s $u.new $u || changed=1; mv $u.new $u
   systemctl --user daemon-reload
-  systemctl --user set-environment WAYLAND_DISPLAY=wayland-limabox ELECTRON_OZONE_PLATFORM_HINT=wayland
+  systemctl --user set-environment WAYLAND_DISPLAY=wayland-limabox ELECTRON_OZONE_PLATFORM_HINT=wayland \
+    PULSE_SERVER=unix:/tmp/limabox-pulse.sock PULSE_LATENCY_MSEC=60 # Brave asks for ~20 ms, which gaps
   systemctl --user enable --now limabox-waypipe.service >/dev/null 2>&1
   [ -z "$changed" ] || systemctl --user restart limabox-waypipe.service
   pkill -f '\''[g]nome-terminal-server'\''; true' # restarts on next use with the new display
@@ -654,6 +688,9 @@ if ! /usr/bin/ssh-add -l >/dev/null 2>&1 && [[ -t 0 ]]; then
   echo "  ssh-agent is empty: adding your default keys to it and the Keychain (passphrase asked once)"
   /usr/bin/ssh-add --apple-use-keychain || true
 fi
+
+agent_plist "local.fedora-lima.sound.$NAME" --sound \
+  '<key>ProcessType</key><string>Interactive</string><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer>'
 
 step "Creating Mac launchers in $APPS_DIR"
 "$LX_DIR/lx" --sync
