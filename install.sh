@@ -16,7 +16,7 @@ CONFIG_DIR=${CONFIG_DIR:-$HOME/.config/limabox}
 # Home folders that hold per-OS installs. Inside the VM each is the Linux home's own copy, mounted
 # at the same path, so installers that hardcode them (or write them into ~/.zshrc) stay correct on
 # both systems. ~/.cargo, ~/.rustup and ~/go are redirected to ~/.linux instead (see mac-home.sh).
-LINUX_DIRS=(.local .bun .deno .nvm .volta .rbenv .opencode .dotnet) # not .pyenv/.sdkman: their installers refuse an existing (mounted) folder
+LINUX_DIRS=(.local .bun .deno .nvm .volta .rbenv .opencode .dotnet .codex) # not .pyenv/.sdkman: their installers refuse an existing (mounted) folder
 
 step() { printf '\n==> %s\n' "$*"; }
 
@@ -31,7 +31,7 @@ brew install lima j-x-z/tap/cocoa-way j-x-z/tap/waypipe-darwin pulseaudio switch
 
 # An existing VM keeps its distro: one limabox made (it has /etc/limabox) is taken as is; any other
 # must match DISTRO, so e.g. Lima's own default Ubuntu VM isn't taken over by accident.
-if limactl list -q 2>/dev/null | grep -qx "$NAME"; then
+if limactl list -q 2>/dev/null | grep -x "$NAME" >/dev/null; then # not -q: an early exit + pipefail = false miss
   [[ $(limactl list --format '{{.Status}}' "$NAME") == Running ]] || limactl start "$NAME"
   id=$(limactl shell "$NAME" sh -c '. /etc/os-release; echo $ID')
   if [[ -z $DISTRO ]] && limactl shell "$NAME" test -d /etc/limabox; then DISTRO=$id; fi
@@ -176,7 +176,7 @@ provision:
       true
 EOF
 
-if limactl list -q 2>/dev/null | grep -qx "$NAME"; then
+if limactl list -q 2>/dev/null | grep -x "$NAME" >/dev/null; then # not -q: an early exit + pipefail = false miss
   step "VM '$NAME' exists, keeping it (delete with: limactl delete -f $NAME)"
 else
   step "Creating VM '$NAME' ($distro_name, first boot installs packages: ~5 min)"
@@ -773,7 +773,7 @@ cat >"$HOME/Library/LaunchAgents/$cocoa_label.plist" <<PLIST
 </dict></plist>
 PLIST
 # (Re)load when not loaded or pointing at another binary; any copy outside launchd is stopped first.
-if ! launchctl print "gui/$(id -u)/$cocoa_label" 2>/dev/null | grep -qx "[[:space:]]*program = $cw_bin" ||
+if ! launchctl print "gui/$(id -u)/$cocoa_label" 2>/dev/null | grep -x "[[:space:]]*program = $cw_bin" >/dev/null ||
   ! cmp -s "$HOME/Library/LaunchAgents/$cocoa_label.plist" "$stampdir/cocoa-way.plist.loaded"; then
   launchctl bootout "gui/$(id -u)/$cocoa_label" 2>/dev/null || true
   pkill -x cocoa-way || true

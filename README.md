@@ -121,8 +121,8 @@ from 2022, and Alpine has no systemd.
   can't be shown.
 - Inside the VM, per-OS install folders are the Linux home's own copies, bind-mounted at the same
   paths: `~/.local`, `~/.bun`, `~/.deno`, `~/.nvm`, `~/.volta`, `~/.rbenv`, `~/.opencode`,
-  `~/.dotnet` (`LINUX_DIRS` in `install.sh`; the installer creates them on the Mac if missing).
-  Installers that hardcode them (Claude Code, oh-my-posh, pipx, bun, opencode) put Linux binaries
+  `~/.dotnet`, `~/.codex` (`LINUX_DIRS` in `install.sh`; the installer creates them on the Mac if missing).
+  Installers that hardcode them (Claude Code, Codex, oh-my-posh, pipx, bun, opencode) put Linux binaries
   there instead of over the Mac's, and the PATH lines some of them append to `~/.zshrc` stay valid
   on both systems. `~/.cargo`, `~/.rustup` and `~/go` go to `~/.linux` via environment variables.
   pyenv and SDKMAN are not covered (their installers refuse an existing folder): install them with
