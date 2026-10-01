@@ -121,6 +121,9 @@ provision:
           $apt update
           # Recommends would pull in whole desktops (budgie, nemo) as GUI apps.
           $apt install --no-install-recommends $pkgs
+          # 26.04's ls is uutils, which pads its long listing out to the terminal width on some
+          # terminals; use GNU's. The rest of uutils stays: build-essential depends on it.
+          for c in ls dir vdir; do ln -sf /usr/bin/gnu$c /usr/local/bin/$c; done
           # uv isn't packaged for Ubuntu: Astral's installer, once.
           [ -x /usr/local/bin/uv ] || curl -LsSf https://astral.sh/uv/install.sh |
             env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
