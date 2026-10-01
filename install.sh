@@ -99,6 +99,14 @@ provision:
         ubuntu)
           export DEBIAN_FRONTEND=noninteractive
           apt="apt-get -o DPkg::Lock::Timeout=600 -y -q" # cloud-init may still hold the lock
+          # No snaps: Ubuntu's firefox/chromium debs are stubs that install them, and snap apps
+          # are invisible to lx-apps. snapd goes and stays gone; firefox comes from Mozilla.
+          if dpkg -s snapd >/dev/null 2>&1; then $apt purge snapd; fi
+          printf 'Package: snapd\nPin: release a=*\nPin-Priority: -10\n' >/etc/apt/preferences.d/limabox-nosnap
+          curl -fsSLo /etc/apt/keyrings/packages.mozilla.org.asc https://packages.mozilla.org/apt/repo-signing-key.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main" \
+            >/etc/apt/sources.list.d/mozilla.list
+          printf 'Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n' >/etc/apt/preferences.d/limabox-mozilla
           curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
             https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
           curl -fsSLo /etc/apt/sources.list.d/brave-browser-release.sources \
