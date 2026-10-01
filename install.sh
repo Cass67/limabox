@@ -94,7 +94,8 @@ provision:
       mkdir -p ~/.config/foot
       [ -e ~/.config/foot/foot.ini ] || printf '[main]\nfont=monospace:size=14\n' > ~/.config/foot/foot.ini
       mkdir -p ~/.config/tabby
-      [ -e ~/.config/tabby/config.yaml ] || printf 'version: 8\nappearance:\n  tabsLocation: left\n' > ~/.config/tabby/config.yaml
+      # frame: native negotiates server-side decorations, so only the macOS title bar is drawn.
+      [ -e ~/.config/tabby/config.yaml ] || printf 'version: 8\nappearance:\n  tabsLocation: left\n  frame: native\n' > ~/.config/tabby/config.yaml
       true
 EOF
 
@@ -251,6 +252,8 @@ fi
 
 step "Setting Linux text scale to $TEXT_SCALE"
 limactl shell "$NAME" gsettings set org.gnome.desktop.interface text-scaling-factor "$TEXT_SCALE"
+# The header bar already holds the menu; the classic menu bar would be a third layer under the title.
+limactl shell "$NAME" gsettings set org.gnome.Terminal.Legacy.Settings default-show-menubar false
 
 # A rebuilt VM gets back the Linux app settings saved by lx --save-config.
 if [[ -n ${created:-} && -d $cfgdir/linux-home ]]; then
@@ -609,15 +612,17 @@ PLIST
   launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$1.plist"
 }
 mkdir -p ~/Library/LaunchAgents
-# Cocoa-Way 2.0.3 never balances NSCursor hide/unhide, so once a client hides the cursor (YouTube
-# does on every idle period) the Mac cursor stays hidden until a click. Build the pinned upstream
-# commit with patches/cocoa-way-cursor-hide-balance.patch until the fix is released.
+# Cocoa-Way 2.0.3 with local fixes (patches/cocoa-way.patch), built from a pinned upstream commit:
+# - NSCursor hide/unhide balanced, and unhidden when the pointer leaves or its window closes, so a
+#   cursor hidden by YouTube doesn't stay invisible until a click;
+# - no native title bar for clients that draw their own (GTK4: gnome-terminal, Files), which
+#   otherwise get two stacked title bars.
 cw_rev=e1ff9b9b333a826ba507fb8d8010f4c6ce2d4b93
-cw_patch=$(cd "$(dirname "$0")" && pwd)/patches/cocoa-way-cursor-hide-balance.patch
+cw_patch=$(cd "$(dirname "$0")" && pwd)/patches/cocoa-way.patch
 cw_bin=$HOME/.local/share/limabox/cocoa-way
 cw_stamp="$cw_rev $(shasum -a 256 "$cw_patch" | cut -c1-16)"
 if [[ ! -x $cw_bin || $(cat "$cw_bin.rev" 2>/dev/null) != "$cw_stamp" ]]; then
-  step "Building Cocoa-Way with the cursor fix (a few minutes, once)"
+  step "Building Cocoa-Way with local fixes (a few minutes, once)"
   command -v cargo >/dev/null || brew install rust
   git clone -q --filter=blob:none https://github.com/J-x-Z/cocoa-way.git "$tmp/cocoa-way"
   git -C "$tmp/cocoa-way" checkout -q "$cw_rev"

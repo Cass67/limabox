@@ -1,8 +1,25 @@
 diff --git a/src/main.rs b/src/main.rs
-index bcc173a2..2e8d7ce1 100644
+index bcc173a2..74803e70 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -4634,6 +4634,7 @@ fn create_event_handler(
+@@ -3436,8 +3436,16 @@ fn create_event_handler(
+                     else {
+                         continue;
+                     };
++                    // Clients that never negotiated xdg-decoration (GTK4: gnome-terminal, Files)
++                    // draw their own header bar; a native title bar on top doubles it. Their move
++                    // requests already start a native drag, and borderless windows still resize.
++                    let server_side_decorations = toplevel.with_committed_state(|state| {
++                        state.is_some_and(|state| state.decoration_mode.is_some())
++                    }) || toplevel
++                        .with_pending_state(|state| state.decoration_mode.is_some());
+                     let attributes = winit::window::Window::default_attributes()
+                         .with_title(presentation::toplevel_title(&toplevel))
++                        .with_decorations(server_side_decorations)
+                         .with_visible(true)
+                         .with_inner_size(winit::dpi::LogicalSize::new(960.0f64, 720.0f64));
+                     let rootless_renderer = target
+@@ -4634,6 +4642,7 @@ fn create_event_handler(
                          rootless.renderer.window.set_cursor_visible(true);
                      }
                      WindowEvent::CursorLeft { .. } => {
@@ -10,7 +27,7 @@ index bcc173a2..2e8d7ce1 100644
                          if let Some(pointer) = state.seat.get_pointer() {
                              pointer.motion(
                                  &mut state,
-@@ -4737,10 +4738,14 @@ fn create_event_handler(
+@@ -4737,10 +4746,14 @@ fn create_event_handler(
                  }
                  if keep_window {
                      rootless_windows.insert(window_id, rootless);
@@ -29,7 +46,7 @@ index bcc173a2..2e8d7ce1 100644
                  }
              }
              Event::WindowEvent { window_id, event } if window_id == renderer.window.id() => {
-@@ -4807,6 +4812,7 @@ fn create_event_handler(
+@@ -4807,6 +4820,7 @@ fn create_event_handler(
                          }
                      }
                      WindowEvent::CursorLeft { .. } => {
